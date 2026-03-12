@@ -1,0 +1,996 @@
+PROJECT DOCUMENTATION
+Offroad Semantic Segmentation Submission Kit
+
+Repository root:
+C:\Users\ak500\OneDrive\Desktop\IT\AI_Hack
+
+Team name:
+Team Invincible
+
+Team members:
+- Karna Bhosle
+- Alok Kushwaha
+- Shankar Gouda
+
+Primary implementation used for this project:
+- Offroad_Segmentation_Scripts
+- frontend
+
+Legacy folder intentionally not used:
+- offroad_ai_system
+
+======================================================================
+1. PROJECT OVERVIEW
+======================================================================
+
+Project name:
+TerrainScope - Offroad Semantic Segmentation and Live Inference Dashboard
+
+Project goal:
+Build a complete off-road scene segmentation system that:
+- trains a semantic segmentation model on the Falcon off-road dataset,
+- predicts one of 10 terrain/object classes for each pixel,
+- reports standard segmentation metrics such as IoU, Dice, and pixel accuracy,
+- exports prediction artifacts and failure cases,
+- and provides a professional frontend for visual review and live image inference.
+
+End result:
+The final project is not just a training script. It is an end-to-end submission kit with:
+- a clean data contract,
+- a config-driven training and evaluation pipeline,
+- checkpointing and resume support,
+- visual analysis outputs,
+- a FastAPI backend,
+- and a React frontend for run browsing and upload inference.
+
+
+======================================================================
+2. PROBLEM STATEMENT
+======================================================================
+
+The task is to semantically segment off-road scenes into meaningful classes that support
+terrain understanding and traversability reasoning.
+
+Why this matters:
+- Off-road environments are visually complex.
+- Different terrain types and obstacles often overlap in texture and color.
+- Lighting, vegetation density, and clutter make pixel-wise classification difficult.
+- Small or infrequent classes such as logs, rocks, or clutter are easy to miss.
+
+The required output:
+- A per-pixel class prediction over 10 semantic classes.
+- Reliable evaluation using segmentation metrics.
+- Visual evidence through color masks, comparison images, and failure analysis.
+
+Core challenge:
+Create a solution that is accurate enough to be useful, while also being practical to run
+in a CPU-constrained environment during development.
+
+
+======================================================================
+3. SOLUTION SUMMARY
+======================================================================
+
+The implemented solution uses transfer learning with a frozen DINOv2 visual backbone and
+a lightweight segmentation head trained on top of extracted patch tokens.
+
+High-level solution choices:
+- Use DINOv2 features instead of training a full segmentation network from scratch.
+- Freeze the backbone to reduce training cost and make CPU training feasible.
+- Train only a compact segmentation head.
+- Enforce one shared 10-class label contract across training, evaluation, visualization,
+  frontend, and backend inference.
+- Save all artifacts needed for a submission:
+  - checkpoints,
+  - metrics,
+  - plots,
+  - predicted masks,
+  - colorized masks,
+  - comparison figures,
+  - worst-case examples.
+- Add a frontend and backend layer so the project can be demonstrated interactively.
+
+Why this approach was chosen:
+- DINOv2 provides strong general-purpose visual representations.
+- Freezing the backbone drastically reduces compute cost.
+- A custom lightweight head is easier to train in a CPU-safe setup.
+- A strict dataset contract prevents silent label corruption.
+
+
+======================================================================
+4. FINAL SYSTEM ARCHITECTURE
+======================================================================
+
+Text architecture diagram:
+
+  Falcon Dataset
+      |
+      v
+  Data Loader + Preprocessing
+      - RGB resize with bilinear interpolation
+      - mask resize with nearest-neighbor interpolation
+      - uint16 raw mask read
+      - raw value to class-id conversion
+      - normalization with ImageNet-style mean/std
+      |
+      v
+  Frozen DINOv2 Backbone (dinov2_vits14)
+      |
+      v
+  Patch Tokens
+      |
+      v
+  Lightweight ConvNeXt-style Segmentation Head
+      |
+      v
+  Bilinear Upsampling to full image size
+      |
+      v
+  Per-pixel 10-class prediction
+      |
+      +--> Training loss
+      +--> Validation metrics
+      +--> Checkpoints
+      +--> Evaluation exports
+      +--> FastAPI inference backend
+      +--> React dashboard
+
+
+======================================================================
+5. DATASET DESCRIPTION
+======================================================================
+
+Dataset folders used:
+
+Training and validation root:
+Offroad_Segmentation_Training_Dataset\Offroad_Segmentation_Training_Dataset
+
+Test root:
+Offroad_Segmentation_testImages\Offroad_Segmentation_testImages
+
+Expected split layout:
+
+Offroad_Segmentation_Training_Dataset/
+  Offroad_Segmentation_Training_Dataset/
+    train/
+      Color_Images/
+      Segmentation/
+    val/
+      Color_Images/
+      Segmentation/
+
+Offroad_Segmentation_testImages/
+  Offroad_Segmentation_testImages/
+    Color_Images/
+    Segmentation/
+
+Dataset sizes actually used:
+- Train images: 2857
+- Validation images: 317
+- Test images: 1002
+
+Important data policy:
+- Test images are never used for training.
+- Validation images are used for model selection and offline evaluation.
+- Test images are used only for final evaluation and visualization exports.
+
+
+======================================================================
+6. LABEL CONTRACT AND MASK HANDLING
+======================================================================
+
+Canonical raw Falcon mask values:
+- 100   -> Trees
+- 200   -> Lush Bushes
+- 300   -> Dry Grass
+- 500   -> Dry Bushes
+- 550   -> Ground Clutter
+- 600   -> Flowers
+- 700   -> Logs
+- 800   -> Rocks
+- 7100  -> Landscape
+- 10000 -> Sky
+
+Canonical class IDs:
+- 0 -> Trees
+- 1 -> Lush Bushes
+- 2 -> Dry Grass
+- 3 -> Dry Bushes
+- 4 -> Ground Clutter
+- 5 -> Flowers
+- 6 -> Logs
+- 7 -> Rocks
+- 8 -> Landscape
+- 9 -> Sky
+
+Ignore index:
+- 255
+
+Why this is important:
+- The masks are not standard 0..9 class IDs in raw form.
+- They must be read without truncation.
+- Reading them incorrectly can silently destroy labels.
+
+Implementation details:
+- Masks are read with cv2.IMREAD_UNCHANGED.
+- Unknown raw values are mapped to 255.
+- In strict mode, unknown values raise an error instead of silently turning into class 0.
+- Mask resize uses nearest-neighbor interpolation to preserve class labels.
+
+Verified dataset raw values:
+- Train + validation raw values:
+  [100, 200, 300, 500, 550, 600, 700, 800, 7100, 10000]
+- Test raw values:
+  [100, 200, 300, 500, 800, 7100, 10000]
+
+Interpretation:
+- The train and validation splits contain the full supported label contract.
+- The test split contains a valid subset of the supported classes.
+
+
+======================================================================
+7. PREPROCESSING PIPELINE
+======================================================================
+
+RGB preprocessing:
+- Read image as RGB
+- Resize to model input resolution
+- Convert to float in [0, 1]
+- Normalize with:
+  - mean = [0.485, 0.456, 0.406]
+  - std  = [0.229, 0.224, 0.225]
+- Convert to CHW tensor
+
+Mask preprocessing:
+- Read uint16/raw mask
+- Convert raw values to class IDs
+- Resize with nearest-neighbor interpolation
+- Convert to long tensor
+
+Quick CPU run input size:
+- 140 x 252
+
+Patch size:
+- 14
+
+Resulting token grid:
+- 10 x 18
+
+
+======================================================================
+8. MODELS USED
+======================================================================
+
+Primary vision backbone:
+- DINOv2 ViT-S/14
+- Model name: dinov2_vits14
+
+How the backbone is used:
+- Loaded through torch.hub from facebookresearch/dinov2
+- Set to eval mode
+- All parameters frozen
+- Used only as a feature extractor
+
+Backbone output used:
+- x_norm_patchtokens
+
+Segmentation head:
+- Custom ConvNeXt-style lightweight head
+- Implemented in:
+  Offroad_Segmentation_Scripts\offroad_segmentation\model.py
+
+Segmentation head structure:
+- 7x7 Conv2d stem to 128 channels
+- GELU activation
+- Depthwise 7x7 Conv2d block
+- GELU activation
+- Pointwise 1x1 Conv2d
+- GELU activation
+- Final 1x1 classifier to 10 classes
+
+Why this model combination was used:
+- DINOv2 gives strong pretrained features for visual understanding.
+- Freezing the backbone reduces training cost.
+- The lightweight head makes the system practical on CPU.
+- The head can learn task-specific segmentation boundaries without updating the full backbone.
+
+
+======================================================================
+9. TRAINING CONFIGURATION
+======================================================================
+
+Base quick config file:
+Offroad_Segmentation_Scripts\configs\quick_cpu.json
+
+Resolved configuration for the final run:
+- seed: 42
+- device: auto
+- backbone_name: dinov2_vits14
+- patch_size: 14
+- image_size: [140, 252]
+- batch_size: 1
+- num_workers: 0
+- epochs per training invocation: 20
+- learning_rate: 0.0001
+- momentum: 0.9
+- weight_decay: 0.0
+- validate_raw_values: false for this quick run configuration
+- num_visual_samples: 2
+- worst_case_count: 2
+
+Loss:
+- CrossEntropyLoss with ignore_index=255
+
+Optimizer:
+- SGD
+- learning rate = 1e-4
+- momentum = 0.9
+- weight decay = 0.0
+
+Device behavior:
+- CPU-safe by default
+- pin_memory only enabled on CUDA
+
+
+======================================================================
+10. FINAL TRAINING RUN DETAILS
+======================================================================
+
+Final run directory:
+Offroad_Segmentation_Scripts\runs\quick_cpu_100x20
+
+Important note about the run name:
+- The folder name is quick_cpu_100x20 because the first invocation was 20 epochs.
+- Training was later resumed for another 20 epochs.
+- The final history contains 40 epochs total.
+
+Verified history length:
+- 40 epochs recorded
+
+Training commands used conceptually:
+
+Initial run:
+python .\Offroad_Segmentation_Scripts\train.py --config .\Offroad_Segmentation_Scripts\configs\quick_cpu.json --epochs 20 --max_train_batches 100 --max_val_batches 20 --run_name quick_cpu_100x20
+
+Resume run:
+python .\Offroad_Segmentation_Scripts\train.py --config .\Offroad_Segmentation_Scripts\configs\quick_cpu.json --resume_from .\Offroad_Segmentation_Scripts\runs\quick_cpu_100x20\checkpoints\last.pth --epochs 20 --max_train_batches 100 --max_val_batches 20
+
+Training-time checkpoint artifacts:
+- best_iou.pth
+- last.pth
+
+Important training-time summary:
+- best_val_iou = 26.24%
+- final_train_loss = 0.6201
+- final_val_loss = 0.8184
+- final_train_iou = 30.63%
+- final_val_iou = 26.24%
+- final_train_dice = 39.13%
+- final_val_dice = 31.59%
+- final_train_pixel_accuracy = 77.50%
+- final_val_pixel_accuracy = 68.61%
+
+Important interpretation:
+- These training-time validation numbers were computed with:
+  - max_train_batches = 100
+  - max_val_batches = 20
+- Therefore they are capped validation metrics used for faster training feedback.
+- Full validation evaluation on the entire validation set is reported separately below and is the more meaningful final score.
+
+
+======================================================================
+11. EVALUATION METHODOLOGY
+======================================================================
+
+Evaluation entrypoint:
+Offroad_Segmentation_Scripts\test.py
+
+Evaluation behavior:
+- Load the frozen DINOv2 backbone
+- Load the trained segmentation head checkpoint
+- Run inference over the requested split
+- Upsample logits to the original input resolution
+- Compute:
+  - mean IoU
+  - mean Dice
+  - pixel accuracy
+  - average loss
+  - per-class IoU
+  - per-class Dice
+  - confusion matrix
+- Save:
+  - raw predicted masks
+  - colorized masks
+  - comparison figures
+  - worst-case figures
+  - per-image IoU CSV
+  - plots
+  - JSON and text summaries
+
+Final evaluation commands used:
+
+Validation:
+python .\Offroad_Segmentation_Scripts\test.py --config .\Offroad_Segmentation_Scripts\configs\quick_cpu.json --model_path .\Offroad_Segmentation_Scripts\runs\quick_cpu_100x20\checkpoints\best_iou.pth --data_root .\Offroad_Segmentation_Training_Dataset\Offroad_Segmentation_Training_Dataset\val
+
+Test:
+python .\Offroad_Segmentation_Scripts\test.py --config .\Offroad_Segmentation_Scripts\configs\quick_cpu.json --model_path .\Offroad_Segmentation_Scripts\runs\quick_cpu_100x20\checkpoints\best_iou.pth --data_root .\Offroad_Segmentation_testImages\Offroad_Segmentation_testImages
+
+
+======================================================================
+12. FINAL RESULTS
+======================================================================
+
+12.1 Summary metrics
+
+Presentation note:
+- IoU, Dice, and pixel accuracy are shown as percentages below for readability.
+- Average loss remains in raw numeric form.
+
+Training-time capped validation summary:
+- Best Validation IoU: 26.24%
+- Final Validation IoU: 26.24%
+- Final Validation Dice: 31.59%
+- Final Validation Pixel Accuracy: 68.61%
+- Final Validation Loss: 0.8184
+
+Full validation evaluation:
+- Mean IoU: 30.30%
+- Mean Dice: 38.88%
+- Pixel Accuracy: 75.35%
+- Average Loss: 0.6690
+
+Test evaluation:
+- Mean IoU: 21.08%
+- Mean Dice: 26.27%
+- Pixel Accuracy: 63.15%
+- Average Loss: 1.2885
+
+12.2 Recommended headline metrics for reporting
+
+If a single validation score is needed for the report, use the full validation evaluation,
+not the capped training-time metric.
+
+Recommended headline values:
+- Validation Mean IoU: 30.30%
+- Validation Mean Dice: 38.88%
+- Validation Pixel Accuracy: 75.35%
+- Test Mean IoU: 21.08%
+- Test Mean Dice: 26.27%
+- Test Pixel Accuracy: 63.15%
+
+12.3 Improvement over the early quick baseline
+
+Early quick baseline validation results:
+- Mean IoU: 6.03%
+- Mean Dice: 9.03%
+- Pixel Accuracy: 40.11%
+
+Final full validation results:
+- Mean IoU: 30.30%
+- Mean Dice: 38.88%
+- Pixel Accuracy: 75.35%
+
+Improvement summary:
+- IoU improved by 24.27 percentage points
+- Dice improved by 29.85 percentage points
+- Pixel accuracy improved by 35.24 percentage points
+
+Interpretation:
+- The largest gains came from correcting the label contract, stabilizing the data pipeline,
+  and training longer with resume support.
+
+
+======================================================================
+13. PER-CLASS VALIDATION RESULTS
+======================================================================
+
+Validation split per-class metrics:
+
+- Trees
+  - IoU: 40.84%
+  - Dice: 57.99%
+
+- Lush Bushes
+  - IoU: 37.87%
+  - Dice: 54.94%
+
+- Dry Grass
+  - IoU: 51.06%
+  - Dice: 67.60%
+
+- Dry Bushes
+  - IoU: 0.00%
+  - Dice: 0.00%
+
+- Ground Clutter
+  - IoU: 0.03%
+  - Dice: 0.07%
+
+- Flowers
+  - IoU: 26.19%
+  - Dice: 41.51%
+
+- Logs
+  - IoU: 0.00%
+  - Dice: 0.00%
+
+- Rocks
+  - IoU: 0.00%
+  - Dice: 0.00%
+
+- Landscape
+  - IoU: 54.77%
+  - Dice: 70.77%
+
+- Sky
+  - IoU: 92.24%
+  - Dice: 95.96%
+
+Validation performance interpretation:
+- Strongest classes:
+  - Sky
+  - Landscape
+  - Dry Grass
+  - Trees
+  - Lush Bushes
+- Mid-performing class:
+  - Flowers
+- Very weak classes:
+  - Dry Bushes
+  - Ground Clutter
+  - Logs
+  - Rocks
+
+Likely reasons:
+- Large classes with consistent visual structure are easier to learn.
+- Small clutter classes are harder under limited CPU-friendly training.
+- Rare classes receive less effective supervision and may require class balancing or more training.
+
+
+======================================================================
+14. PER-CLASS TEST RESULTS
+======================================================================
+
+Test split per-class metrics:
+
+- Trees
+  - IoU: 10.49%
+  - Dice: 18.99%
+
+- Lush Bushes
+  - IoU: 0.00%
+  - Dice: 0.00%
+
+- Dry Grass
+  - IoU: 35.23%
+  - Dice: 52.10%
+
+- Dry Bushes
+  - IoU: 0.00%
+  - Dice: 0.00%
+
+- Ground Clutter
+  - IoU: 0.00%
+  - Dice: 0.00%
+
+- Flowers
+  - IoU: 0.00%
+  - Dice: 0.00%
+
+- Logs
+  - IoU: N/A
+  - Dice: N/A
+
+- Rocks
+  - IoU: 0.00%
+  - Dice: 0.00%
+
+- Landscape
+  - IoU: 55.52%
+  - Dice: 71.40%
+
+- Sky
+  - IoU: 88.53%
+  - Dice: 93.91%
+
+Important note:
+- Logs are reported as N/A on the test evaluation because there were no valid target pixels
+  for that class in the evaluated data.
+
+Test performance interpretation:
+- The model generalizes best to:
+  - Sky
+  - Landscape
+  - Dry Grass
+- Performance drops on small or inconsistent foreground classes.
+- The gap between validation and test indicates limited robustness for rare classes.
+
+14.1 Validation-to-test gap summary
+
+Metric gap from validation to test:
+- Mean IoU drop: 9.22 percentage points
+- Mean Dice drop: 12.61 percentage points
+- Pixel Accuracy drop: 12.20 percentage points
+
+Interpretation:
+- The model preserves broad scene structure on unseen data,
+- but loses accuracy on difficult or low-frequency classes,
+- which is consistent with the zero or near-zero IoU seen for several rare categories.
+
+
+======================================================================
+15. METRIC DEFINITIONS
+======================================================================
+
+IoU (Intersection over Union):
+- Measures overlap between predicted and ground-truth regions.
+- Formula:
+  IoU = TP / (TP + FP + FN)
+- This is one of the most important semantic segmentation metrics.
+
+Dice coefficient:
+- Measures overlap with stronger emphasis on matching regions.
+- Formula:
+  Dice = 2TP / (2TP + FP + FN)
+
+Pixel accuracy:
+- Fraction of correctly classified pixels over all valid pixels.
+
+Why IoU and Dice matter here:
+- Pixel accuracy can look strong even when rare classes are missed.
+- IoU and Dice reveal whether boundaries and minority classes are actually learned.
+
+
+======================================================================
+16. ENGINEERING FIXES AND IMPROVEMENTS APPLIED
+======================================================================
+
+The project was substantially refactored into a clean submission kit.
+
+Major fixes applied:
+
+1. Canonical label contract
+- Replaced inconsistent or incorrect handling with one shared 10-class mapping.
+- Removed fake background logic.
+- Preserved the actual Falcon raw values.
+
+2. Correct dataset roots
+- Fixed scripts to use the true nested dataset structure.
+
+3. Proper uint16 mask reading
+- Prevented label truncation by reading masks unchanged.
+
+4. Strict unknown-label handling
+- Unknown values map to 255 and can fail early in strict mode.
+
+5. Shared core package
+- Consolidated data, labels, metrics, model loading, and reporting under:
+  Offroad_Segmentation_Scripts\offroad_segmentation
+
+6. Config-driven CLI
+- Added train.py and test.py entrypoints with overrideable config behavior.
+
+7. CPU-safe defaults
+- Batch size 1, small input size, workers 0, frozen backbone.
+
+8. Resume support
+- Added checkpoint resume so longer training could continue from last.pth.
+
+9. Full artifact export
+- Saved checkpoints, plots, metrics, raw masks, color masks, comparison images,
+  worst cases, and CSV summaries.
+
+10. Visualization tooling
+- Added visualize.py for raw-mask and predicted-mask colorization.
+
+11. Live backend inference
+- Added FastAPI server for:
+  - run discovery,
+  - dashboard payload generation,
+  - asset serving,
+  - image upload inference.
+
+12. Professional frontend
+- Added React frontend for:
+  - browsing runs,
+  - reviewing metrics,
+  - comparing images and predictions,
+  - fullscreen compare,
+  - viewing terrain suggestions,
+  - live upload inference.
+
+
+======================================================================
+17. FRONTEND AND BACKEND ARCHITECTURE
+======================================================================
+
+Frontend stack:
+- React
+- Vite
+- Custom styled dashboard components
+
+Backend stack:
+- FastAPI
+- PyTorch inference
+
+Frontend responsibilities:
+- Display training metrics and plots
+- Switch between available runs
+- Switch between validation and test views
+- Review comparison figures
+- Open fullscreen compare modal
+- Upload a new image for live inference
+- Show image analysis suggestions beside the image
+
+Backend responsibilities:
+- Discover available runs
+- Load run artifacts
+- Serve plots and sample assets
+- Load the trained checkpoint
+- Run inference on uploaded images
+- Return:
+  - original image,
+  - raw prediction,
+  - overlay,
+  - image metadata,
+  - dominant class,
+  - confidence summary,
+  - terrain suggestions based on predicted class coverage
+
+Image analysis support:
+- The system computes class coverage from the predicted mask.
+- It derives a short scene summary.
+- It surfaces practical suggestions such as:
+  - obstacle-heavy scenes,
+  - vegetation-heavy scenes,
+  - open horizon scenes.
+
+
+======================================================================
+18. OUTPUT ARTIFACTS PRODUCED
+======================================================================
+
+Training run outputs:
+Offroad_Segmentation_Scripts\runs\quick_cpu_100x20\
+
+Key files:
+- checkpoints\best_iou.pth
+- checkpoints\last.pth
+- metrics\history.json
+- metrics\history.csv
+- metrics\training_summary.json
+- plots\training_metrics.png
+- config_resolved.json
+
+Validation evaluation outputs:
+Offroad_Segmentation_Scripts\runs\quick_cpu_100x20\evaluations\val\
+
+Test evaluation outputs:
+Offroad_Segmentation_Scripts\runs\quick_cpu_100x20\evaluations\Offroad_Segmentation_testImages\
+
+Evaluation artifacts include:
+- predictions\raw_masks\
+- predictions\color_masks\
+- comparisons\
+- worst_cases\
+- evaluation_metrics.txt
+- evaluation_metrics.json
+- per_class_iou.png
+- per_class_dice.png
+- confusion_matrix.png
+- per_image_metrics.csv
+
+
+======================================================================
+19. CHALLENGES ENCOUNTERED
+======================================================================
+
+1. Training speed on CPU
+Problem:
+- Full-resolution or heavy models were too slow on CPU.
+
+Fix:
+- Freeze the DINOv2 backbone.
+- Use a quick CPU config.
+- Reduce image size to 140 x 252.
+- Use batch size 1 and workers 0.
+- Add resume support for longer runs.
+
+Result:
+- Training became feasible locally.
+
+2. Mask-format issues
+Problem:
+- Falcon masks use nonstandard raw values and can be corrupted by incorrect reading.
+
+Fix:
+- Read masks unchanged.
+- Convert through a strict shared mapping.
+
+Result:
+- Correct supervision signal for training and evaluation.
+
+3. Dataset path mismatch
+Problem:
+- Initial scripts assumed simpler paths than the actual nested dataset layout.
+
+Fix:
+- Standardized exact dataset roots.
+
+Result:
+- Stable dataset discovery across train, validation, and test.
+
+4. Inconsistent scripts
+Problem:
+- The previous code path was fragmented and not submission-ready.
+
+Fix:
+- Rebuilt the usable pipeline outside the legacy folder.
+
+Result:
+- Cleaner, reproducible project structure.
+
+5. Demonstration quality
+Problem:
+- Static plots alone are not enough for presentation.
+
+Fix:
+- Added a frontend and API for live inference and guided review.
+
+Result:
+- The project is easier to present and inspect.
+
+
+======================================================================
+20. LIMITATIONS
+======================================================================
+
+Current limitations of the final model:
+- Rare classes are weakly learned.
+- Small clutter objects remain difficult.
+- The backbone is frozen, so representation adaptation is limited.
+- Training was intentionally CPU-safe rather than maximum-performance oriented.
+- The quick config disables full raw-value scan during the final fast run to save time.
+- The final run used capped batches per epoch for faster local iteration.
+
+Observed weak classes:
+- Dry Bushes
+- Ground Clutter
+- Logs
+- Rocks
+- Several of these had zero or near-zero IoU in evaluation
+
+Meaning:
+- The model is useful as a baseline and demo system, but not yet a high-performing
+  production-grade off-road segmenter across all classes.
+
+
+======================================================================
+21. FUTURE WORK
+======================================================================
+
+If more time or compute were available, the next recommended improvements are:
+
+1. Train longer with larger coverage
+- Remove or increase max_train_batches and max_val_batches.
+
+2. Use a stronger decoder
+- Replace the lightweight head with a richer segmentation decoder.
+
+3. Unfreeze part of the backbone
+- Fine-tune upper DINOv2 blocks instead of keeping the full backbone frozen.
+
+4. Add class balancing
+- Weighted loss or balanced sampling for rare classes.
+
+5. Use augmentation
+- Color jitter
+- random crop
+- flip
+- scale jitter
+- class-targeted augmentation for hard categories
+
+6. Increase resolution
+- Use larger patch-aligned input sizes if GPU resources are available.
+
+7. Improve scene explanation
+- Add risk scoring, traversable-vs-obstacle scoring, and spatial hotspot overlays.
+
+
+======================================================================
+22. REPRODUCIBILITY AND EXECUTION
+======================================================================
+
+Install dependencies:
+python -m pip install -r .\Offroad_Segmentation_Scripts\requirements.txt
+
+Start API server:
+.\.venv\Scripts\uvicorn frontend.server.app:app --reload --port 8000
+
+Start frontend:
+cd .\frontend
+npm install
+npm run dev
+
+Train a smoke test:
+python .\Offroad_Segmentation_Scripts\train.py --dry_run --max_train_batches 1 --max_val_batches 1 --run_name smoke_test
+
+Train a full named run:
+python .\Offroad_Segmentation_Scripts\train.py --run_name dinov2_baseline
+
+Evaluate validation:
+python .\Offroad_Segmentation_Scripts\test.py --model_path .\Offroad_Segmentation_Scripts\runs\dinov2_baseline\checkpoints\best_iou.pth --data_root .\Offroad_Segmentation_Training_Dataset\Offroad_Segmentation_Training_Dataset\val
+
+Evaluate test:
+python .\Offroad_Segmentation_Scripts\test.py --model_path .\Offroad_Segmentation_Scripts\runs\dinov2_baseline\checkpoints\best_iou.pth --data_root .\Offroad_Segmentation_testImages\Offroad_Segmentation_testImages
+
+Colorize raw masks:
+python .\Offroad_Segmentation_Scripts\visualize.py --input_path .\Offroad_Segmentation_testImages\Offroad_Segmentation_testImages\Segmentation --mode raw
+
+
+======================================================================
+23. KEY FILES
+======================================================================
+
+Core training/evaluation:
+- Offroad_Segmentation_Scripts\train.py
+- Offroad_Segmentation_Scripts\test.py
+- Offroad_Segmentation_Scripts\visualize.py
+
+Shared package:
+- Offroad_Segmentation_Scripts\offroad_segmentation\data.py
+- Offroad_Segmentation_Scripts\offroad_segmentation\labels.py
+- Offroad_Segmentation_Scripts\offroad_segmentation\metrics.py
+- Offroad_Segmentation_Scripts\offroad_segmentation\model.py
+- Offroad_Segmentation_Scripts\offroad_segmentation\reporting.py
+
+Configs:
+- Offroad_Segmentation_Scripts\configs\default_config.json
+- Offroad_Segmentation_Scripts\configs\quick_cpu.json
+
+Frontend:
+- frontend\src\App.jsx
+- frontend\src\styles.css
+- frontend\src\components\
+
+Backend:
+- frontend\server\app.py
+- frontend\server\service.py
+
+Project docs:
+- README.md
+- REPORT_TEMPLATE.md
+- project_documentation.txt
+
+
+======================================================================
+24. CONCLUSION
+======================================================================
+
+This project successfully delivers a complete off-road semantic segmentation kit centered
+on a frozen DINOv2 backbone and a lightweight custom segmentation head.
+
+What was achieved:
+- correct 10-class label handling,
+- clean train and test pipelines,
+- strict dataset contract support,
+- checkpointed and resumable training,
+- full evaluation exports,
+- validation and test reporting,
+- live inference backend,
+- and a frontend for interactive review.
+
+Final recommended headline results:
+- Validation Mean IoU: 30.30%
+- Validation Mean Dice: 38.88%
+- Validation Pixel Accuracy: 75.35%
+- Test Mean IoU: 21.08%
+- Test Mean Dice: 26.27%
+- Test Pixel Accuracy: 63.15%
+
+Overall assessment:
+- The final model is a solid baseline and demonstration system.
+- It performs strongly on large, visually stable classes such as sky and landscape.
+- It still struggles on smaller, rarer, and clutter-heavy classes.
+- The engineering pipeline, however, is complete, reproducible, and ready for submission,
+  further experimentation, or presentation.

@@ -1,0 +1,62 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+*.code-workspace
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.python-version
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+.venv/
+venv/
+env/
+
+# Environment / local secrets
+.env
+.env.*
+!.env.example
+
+# Logs / temp
+*.log
+tmp/
+temp/
+
+# Node / Vite
+node_modules/
+frontend/node_modules/
+dist/
+frontend/dist/
+frontend/.vite/
+
+# Coverage / build outputs
+.coverage
+.coverage.*
+coverage/
+htmlcov/
+
+# Model caches and generated dashboard exports
+Offroad_Segmentation_Scripts/.cache/
+frontend/public/dashboard/
+
+# Generated training / evaluation artifacts
+Offroad_Segmentation_Scripts/runs/
+
+# Local datasets
+Offroad_Segmentation_Training_Dataset/
+Offroad_Segmentation_testImages/
+
+# Legacy folder to exclude entirely
+offroad_ai_system/
+
+# Keep Python source files trackable
+!*.py
+!**/*.py

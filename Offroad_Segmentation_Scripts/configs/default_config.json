@@ -1,0 +1,20 @@
+{
+  "seed": 42,
+  "device": "auto",
+  "backbone_name": "dinov2_vits14",
+  "patch_size": 14,
+  "image_size": [266, 476],
+  "batch_size": 1,
+  "num_workers": 0,
+  "epochs": 10,
+  "learning_rate": 0.0001,
+  "momentum": 0.9,
+  "weight_decay": 0.0,
+  "validate_raw_values": true,
+  "run_name": "dinov2_vits14_baseline",
+  "num_visual_samples": 5,
+  "worst_case_count": 5,
+  "train_data_root": "../../Offroad_Segmentation_Training_Dataset/Offroad_Segmentation_Training_Dataset/train",
+  "val_data_root": "../../Offroad_Segmentation_Training_Dataset/Offroad_Segmentation_Training_Dataset/val",
+  "test_data_root": "../../Offroad_Segmentation_testImages/Offroad_Segmentation_testImages"
+}

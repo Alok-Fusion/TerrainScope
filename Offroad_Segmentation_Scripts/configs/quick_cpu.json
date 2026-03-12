@@ -1,0 +1,9 @@
+{
+  "run_name": "quick_cpu",
+  "image_size": [140, 252],
+  "epochs": 1,
+  "batch_size": 1,
+  "validate_raw_values": false,
+  "num_visual_samples": 2,
+  "worst_case_count": 2
+}
