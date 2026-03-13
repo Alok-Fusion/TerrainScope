@@ -333,49 +333,89 @@ Device behavior:
 
 
 ======================================================================
-10. FINAL TRAINING RUN DETAILS
+10. VALIDATED TRAINING RUN DETAILS
 ======================================================================
 
-Final run directory:
+Two DINOv2 runs are important in the current project state.
+
+Run 1:
 Offroad_Segmentation_Scripts\runs\quick_cpu_100x20
 
-Important note about the run name:
-- The folder name is quick_cpu_100x20 because the first invocation was 20 epochs.
-- Training was later resumed for another 20 epochs.
-- The final history contains 40 epochs total.
+Purpose:
+- Best balanced CPU baseline
+- Better held-out test metrics than the newer continuation run
 
-Verified history length:
-- 40 epochs recorded
+Run 2:
+Offroad_Segmentation_Scripts\runs\probe_continue_high_iou
 
-Training commands used conceptually:
+Purpose:
+- Best validation-focused continuation
+- Warm-started from the baseline checkpoint
+- Uses stronger loss, balanced sampling, and augmentation
+
+10.1 Baseline run details
+
+The folder name is quick_cpu_100x20 because the first invocation was 20 epochs.
+Training was resumed twice, and the final saved history contains 80 epochs total.
+
+Baseline commands:
 
 Initial run:
 python .\Offroad_Segmentation_Scripts\train.py --config .\Offroad_Segmentation_Scripts\configs\quick_cpu.json --epochs 20 --max_train_batches 100 --max_val_batches 20 --run_name quick_cpu_100x20
 
 Resume run:
-python .\Offroad_Segmentation_Scripts\train.py --config .\Offroad_Segmentation_Scripts\configs\quick_cpu.json --resume_from .\Offroad_Segmentation_Scripts\runs\quick_cpu_100x20\checkpoints\last.pth --epochs 20 --max_train_batches 100 --max_val_batches 20
+python .\Offroad_Segmentation_Scripts\train.py --config .\Offroad_Segmentation_Scripts\configs\quick_cpu.json --resume_from .\Offroad_Segmentation_Scripts\runs\quick_cpu_100x20\checkpoints\last.pth --epochs 40 --max_train_batches 100 --max_val_batches 20
 
-Training-time checkpoint artifacts:
-- best_iou.pth
-- last.pth
+Verified baseline history length:
+- 80 epochs recorded
 
-Important training-time summary:
-- best_val_iou = 26.24%
-- final_train_loss = 0.6201
-- final_val_loss = 0.8184
-- final_train_iou = 30.63%
-- final_val_iou = 26.24%
-- final_train_dice = 39.13%
-- final_val_dice = 31.59%
-- final_train_pixel_accuracy = 77.50%
-- final_val_pixel_accuracy = 68.61%
+Baseline training-time summary:
+- best_val_iou = 27.06%
+- final_train_loss = 0.6049
+- final_val_loss = 0.7623
+- final_train_iou = 33.42%
+- final_val_iou = 27.01%
+- final_train_dice = 42.21%
+- final_val_dice = 32.24%
+- final_train_pixel_accuracy = 77.46%
+- final_val_pixel_accuracy = 70.15%
+
+10.2 High-IoU continuation run details
+
+This run uses the config:
+- Offroad_Segmentation_Scripts\configs\high_iou_continue_from_quick.json
+
+Key changes relative to the baseline:
+- warm-start from baseline best checkpoint
+- larger image size: 224 x 392
+- class-balanced cross-entropy + focal + dice loss
+- AdamW optimizer
+- cosine learning-rate decay
+- balanced sampling
+- stronger augmentation
+
+Continuation command that produced the current best validation result:
+python .\Offroad_Segmentation_Scripts\train.py --config .\Offroad_Segmentation_Scripts\configs\high_iou_continue_from_quick.json --resume_from .\Offroad_Segmentation_Scripts\runs\quick_cpu_100x20\checkpoints\best_iou.pth --resume_weights_only --epochs 8 --max_train_batches 100 --max_val_batches 20 --run_name probe_continue_high_iou
+
+Verified continuation history length:
+- 12 epochs currently saved in history
+
+Current best saved continuation checkpoint:
+- epoch 8
+
+Continuation training-time summary at the best saved checkpoint:
+- best_val_iou = 34.76%
+- val_dice = 43.48%
+- val_pixel_accuracy = 73.29%
+- optimizer = AdamW
+- scheduler = cosine
+- loss = cross_entropy_focal_dice
 
 Important interpretation:
-- These training-time validation numbers were computed with:
-  - max_train_batches = 100
-  - max_val_batches = 20
-- Therefore they are capped validation metrics used for faster training feedback.
-- Full validation evaluation on the entire validation set is reported separately below and is the more meaningful final score.
+- both runs still use capped batches during training for CPU practicality
+- full validation and test evaluation must be taken from test.py outputs, not the capped training loop
+- the continuation run is currently the best validation IoU result in the repository
+- the baseline run still generalizes better on the test split
 
 
 ======================================================================
@@ -426,37 +466,42 @@ Presentation note:
 - IoU, Dice, and pixel accuracy are shown as percentages below for readability.
 - Average loss remains in raw numeric form.
 
-Training-time capped validation summary:
-- Best Validation IoU: 26.24%
-- Final Validation IoU: 26.24%
-- Final Validation Dice: 31.59%
-- Final Validation Pixel Accuracy: 68.61%
-- Final Validation Loss: 0.8184
+Baseline full validation evaluation:
+- Mean IoU: 32.93%
+- Mean Dice: 41.75%
+- Pixel Accuracy: 77.00%
+- Average Loss: 0.6159
 
-Full validation evaluation:
-- Mean IoU: 30.30%
-- Mean Dice: 38.88%
-- Pixel Accuracy: 75.35%
-- Average Loss: 0.6690
+Baseline test evaluation:
+- Mean IoU: 21.21%
+- Mean Dice: 26.34%
+- Pixel Accuracy: 61.66%
+- Average Loss: 1.2831
 
-Test evaluation:
-- Mean IoU: 21.08%
-- Mean Dice: 26.27%
-- Pixel Accuracy: 63.15%
-- Average Loss: 1.2885
+High-IoU continuation full validation evaluation:
+- Mean IoU: 42.88%
+- Mean Dice: 55.42%
+- Pixel Accuracy: 78.38%
+- Average Loss: 0.5824
+
+High-IoU continuation test evaluation:
+- Mean IoU: 19.80%
+- Mean Dice: 25.84%
+- Pixel Accuracy: 40.71%
+- Average Loss: 1.4671
 
 12.2 Recommended headline metrics for reporting
 
-If a single validation score is needed for the report, use the full validation evaluation,
-not the capped training-time metric.
+If a single validation score is needed for the report, use the continuation run.
+If a single test score is needed for the report, use the baseline run.
 
 Recommended headline values:
-- Validation Mean IoU: 30.30%
-- Validation Mean Dice: 38.88%
-- Validation Pixel Accuracy: 75.35%
-- Test Mean IoU: 21.08%
-- Test Mean Dice: 26.27%
-- Test Pixel Accuracy: 63.15%
+- Best Validation Mean IoU: 42.88%
+- Best Validation Mean Dice: 55.42%
+- Best Validation Pixel Accuracy: 78.38%
+- Best Test Mean IoU: 21.21%
+- Best Test Mean Dice: 26.34%
+- Best Test Pixel Accuracy: 61.66%
 
 12.3 Improvement over the early quick baseline
 
@@ -465,19 +510,19 @@ Early quick baseline validation results:
 - Mean Dice: 9.03%
 - Pixel Accuracy: 40.11%
 
-Final full validation results:
-- Mean IoU: 30.30%
-- Mean Dice: 38.88%
-- Pixel Accuracy: 75.35%
+Improved continuation validation results:
+- Mean IoU: 42.88%
+- Mean Dice: 55.42%
+- Pixel Accuracy: 78.38%
 
 Improvement summary:
-- IoU improved by 24.27 percentage points
-- Dice improved by 29.85 percentage points
-- Pixel accuracy improved by 35.24 percentage points
+- IoU improved by 36.85 percentage points
+- Dice improved by 46.39 percentage points
+- Pixel accuracy improved by 38.27 percentage points
 
 Interpretation:
 - The largest gains came from correcting the label contract, stabilizing the data pipeline,
-  and training longer with resume support.
+  warming-starting from the baseline checkpoint, and switching to a stronger continuation recipe.
 
 
 ======================================================================
@@ -852,6 +897,7 @@ Current limitations of the final model:
 - Training was intentionally CPU-safe rather than maximum-performance oriented.
 - The quick config disables full raw-value scan during the final fast run to save time.
 - The final run used capped batches per epoch for faster local iteration.
+- The best validation-focused continuation currently overfits relative to the held-out test split.
 
 Observed weak classes:
 - Dry Bushes
@@ -881,14 +927,11 @@ If more time or compute were available, the next recommended improvements are:
 - Fine-tune upper DINOv2 blocks instead of keeping the full backbone frozen.
 
 4. Add class balancing
-- Weighted loss or balanced sampling for rare classes.
+- Continue tuning the already-implemented weighted loss and balanced sampling strategy.
 
 5. Use augmentation
-- Color jitter
-- random crop
-- flip
-- scale jitter
-- class-targeted augmentation for hard categories
+- Refine the already-implemented color jitter, random crop, and flip policy.
+- Add class-targeted augmentation for hard categories.
 
 6. Increase resolution
 - Use larger patch-aligned input sizes if GPU resources are available.
@@ -981,15 +1024,15 @@ What was achieved:
 - and a frontend for interactive review.
 
 Final recommended headline results:
-- Validation Mean IoU: 30.30%
-- Validation Mean Dice: 38.88%
-- Validation Pixel Accuracy: 75.35%
-- Test Mean IoU: 21.08%
-- Test Mean Dice: 26.27%
-- Test Pixel Accuracy: 63.15%
+- Best Validation Mean IoU: 42.88%
+- Best Validation Mean Dice: 55.42%
+- Best Validation Pixel Accuracy: 78.38%
+- Best Test Mean IoU: 21.21%
+- Best Test Mean Dice: 26.34%
+- Best Test Pixel Accuracy: 61.66%
 
 Overall assessment:
-- The final model is a solid baseline and demonstration system.
+- The current system is a solid baseline and demonstration system with a stronger validation-focused continuation path.
 - It performs strongly on large, visually stable classes such as sky and landscape.
 - It still struggles on smaller, rarer, and clutter-heavy classes.
 - The engineering pipeline, however, is complete, reproducible, and ready for submission,

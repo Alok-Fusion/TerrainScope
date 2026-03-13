@@ -33,7 +33,6 @@ SPLIT_FOLDER_TO_KEY = {
     "val": ("Validation", "val"),
     "Offroad_Segmentation_testImages": ("Test", "test"),
 }
-SPLIT_KEY_TO_FOLDER = {split_key: folder_name for folder_name, (_, split_key) in SPLIT_FOLDER_TO_KEY.items()}
 ASSET_KINDS = {"image", "prediction", "ground_truth", "comparison"}
 
 
@@ -94,13 +93,60 @@ def available_run_dirs() -> list[Path]:
     return sorted(run_dirs, key=lambda path: path.stat().st_mtime, reverse=True)
 
 
+def classify_split_dir_name(folder_name: str) -> tuple[str, str] | None:
+    normalized = folder_name.lower()
+    if normalized == "val" or normalized.startswith("val_"):
+        return ("Validation", "val")
+    if (
+        normalized == "offroad_segmentation_testimages"
+        or normalized.startswith("test")
+        or "test" in normalized
+    ):
+        return ("Test", "test")
+    return None
+
+
+def preferred_split_dirs(run_dir: Path) -> dict[str, tuple[str, Path]]:
+    evaluation_root = run_dir / "evaluations"
+    selected: dict[str, tuple[str, Path]] = {}
+    if not evaluation_root.exists():
+        return selected
+
+    candidates_by_split: dict[str, list[tuple[str, Path]]] = {}
+    for candidate in evaluation_root.iterdir():
+        if not candidate.is_dir():
+            continue
+        split_context = classify_split_dir_name(candidate.name)
+        if split_context is None:
+            continue
+        label, split_key = split_context
+        if not (candidate / "evaluation_metrics.json").exists():
+            continue
+        candidates_by_split.setdefault(split_key, []).append((label, candidate))
+
+    for split_key, candidates in candidates_by_split.items():
+        candidates.sort(key=lambda item: item[1].stat().st_mtime, reverse=True)
+        selected[split_key] = candidates[0]
+
+    return selected
+
+
+def evaluation_dir_for_split(run_dir: Path, split_key: str) -> Path:
+    split_dirs = preferred_split_dirs(run_dir)
+    split_context = split_dirs.get(split_key)
+    if split_context is None:
+        raise FileNotFoundError(f"Split '{split_key}' not found for run '{run_dir.name}'.")
+    return split_context[1]
+
+
 def summarize_run(run_dir: Path) -> dict[str, Any]:
     history = read_json(run_dir / "metrics" / "history.json")
     config = read_json(run_dir / "config_resolved.json")
-    val_metrics_path = run_dir / "evaluations" / "val" / "evaluation_metrics.json"
-    test_metrics_path = run_dir / "evaluations" / "Offroad_Segmentation_testImages" / "evaluation_metrics.json"
-    val_metrics = read_json(val_metrics_path) if val_metrics_path.exists() else None
-    test_metrics = read_json(test_metrics_path) if test_metrics_path.exists() else None
+    split_dirs = preferred_split_dirs(run_dir)
+    val_dir = split_dirs.get("val", (None, None))[1]
+    test_dir = split_dirs.get("test", (None, None))[1]
+    val_metrics = read_json(val_dir / "evaluation_metrics.json") if val_dir else None
+    test_metrics = read_json(test_dir / "evaluation_metrics.json") if test_dir else None
 
     return sanitize_for_json(
         {
@@ -123,10 +169,20 @@ def list_runs() -> list[dict[str, Any]]:
 
 
 def get_default_run_name() -> str:
-    runs = available_run_dirs()
-    if not runs:
+    run_dirs = available_run_dirs()
+    if not run_dirs:
         raise FileNotFoundError("No completed runs were found under Offroad_Segmentation_Scripts/runs.")
-    return runs[0].name
+
+    summaries = [summarize_run(run_dir) for run_dir in run_dirs]
+    summaries.sort(
+        key=lambda run: (
+            float(run.get("valMeanIoU") or -1.0),
+            float(run.get("bestValIoU") or -1.0),
+            float(run.get("modifiedAt") or 0.0),
+        ),
+        reverse=True,
+    )
+    return str(summaries[0]["name"])
 
 
 def parse_metrics_rows(path: Path) -> list[dict[str, Any]]:
@@ -156,16 +212,7 @@ def select_featured_samples(rows: list[dict[str, Any]], best_count: int = 3, wor
 
 
 def evaluate_dirs_for_run(run_dir: Path) -> dict[str, tuple[str, Path]]:
-    evaluation_root = run_dir / "evaluations"
-    split_dirs: dict[str, tuple[str, Path]] = {}
-    if not evaluation_root.exists():
-        return split_dirs
-
-    for folder_name, (label, split_key) in SPLIT_FOLDER_TO_KEY.items():
-        split_dir = evaluation_root / folder_name
-        if split_dir.exists():
-            split_dirs[split_key] = (label, split_dir)
-    return split_dirs
+    return preferred_split_dirs(run_dir)
 
 
 def read_image_info(image_path: Path) -> dict[str, Any]:
@@ -347,14 +394,7 @@ def build_dashboard_payload(run_name: str) -> dict[str, Any]:
 
 def resolve_split_context(run_name: str, split_key: str) -> tuple[Path, dict[str, Any], Path]:
     run_dir = run_dir_for_name(run_name)
-    split_folder = SPLIT_KEY_TO_FOLDER.get(split_key)
-    if split_folder is None:
-        raise FileNotFoundError(f"Unknown split: {split_key}")
-
-    evaluation_dir = run_dir / "evaluations" / split_folder
-    if not evaluation_dir.exists():
-        raise FileNotFoundError(f"Split '{split_key}' not found for run '{run_name}'.")
-
+    evaluation_dir = evaluation_dir_for_split(run_dir, split_key)
     metrics = read_json(evaluation_dir / "evaluation_metrics.json")
     source_root = Path(metrics["data_root"])
     return run_dir, metrics, source_root
@@ -447,7 +487,7 @@ def get_sample_asset_path(run_name: str, split_key: str, sample_id: str, asset_k
     if asset_kind not in ASSET_KINDS:
         raise FileNotFoundError(f"Unknown asset kind: {asset_kind}")
 
-    _, _, source_root = resolve_split_context(run_name, split_key)
+    run_dir, _, source_root = resolve_split_context(run_name, split_key)
     sample_stem = Path(sample_id).stem
     image_path = source_root / "Color_Images" / f"{sample_stem}.png"
     if not image_path.exists():
@@ -456,14 +496,8 @@ def get_sample_asset_path(run_name: str, split_key: str, sample_id: str, asset_k
     if asset_kind == "image":
         return image_path
 
-    prediction_source = (
-        run_dir_for_name(run_name)
-        / "evaluations"
-        / SPLIT_KEY_TO_FOLDER[split_key]
-        / "predictions"
-        / "color_masks"
-        / f"{sample_stem}_pred_color.png"
-    )
+    evaluation_dir = evaluation_dir_for_split(run_dir, split_key)
+    prediction_source = evaluation_dir / "predictions" / "color_masks" / f"{sample_stem}_pred_color.png"
     ground_truth_source = source_root / "Segmentation" / f"{sample_stem}.png"
 
     image_info = read_image_info(image_path)
@@ -614,10 +648,7 @@ def plot_path_for_run(run_name: str, plot_name: str, split_key: str | None = Non
     if split_key is None:
         path = run_dir / "plots" / plot_name
     else:
-        split_folder = SPLIT_KEY_TO_FOLDER.get(split_key)
-        if split_folder is None:
-            raise FileNotFoundError(f"Unknown split: {split_key}")
-        path = run_dir / "evaluations" / split_folder / plot_name
+        path = evaluation_dir_for_split(run_dir, split_key) / plot_name
 
     if not path.exists():
         raise FileNotFoundError(f"Plot not found: {path}")

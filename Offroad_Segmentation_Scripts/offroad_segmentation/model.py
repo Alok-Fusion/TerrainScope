@@ -305,6 +305,51 @@ def get_trainable_parameters(model: nn.Module):
     return [parameter for parameter in model.parameters() if parameter.requires_grad]
 
 
+def get_optimization_parameter_groups(model: nn.Module, config: dict[str, Any]) -> list[dict[str, Any]]:
+    base_learning_rate = float(config["learning_rate"])
+    encoder_lr_scale = float(config.get("encoder_lr_scale", 1.0))
+    decoder_lr_scale = float(config.get("decoder_lr_scale", 1.0))
+
+    def make_group(parameters, lr_scale: float) -> dict[str, Any] | None:
+        params = [parameter for parameter in parameters if parameter.requires_grad]
+        if not params:
+            return None
+        return {"params": params, "lr": base_learning_rate * lr_scale}
+
+    groups: list[dict[str, Any]] = []
+
+    if isinstance(model, DinoV2SegmentationModel):
+        backbone_group = make_group(model.backbone.parameters(), encoder_lr_scale)
+        head_group = make_group(model.head.parameters(), decoder_lr_scale)
+        groups = [group for group in (backbone_group, head_group) if group is not None]
+    elif isinstance(model, SegFormerSegmentationModel):
+        encoder_group = make_group(model.model.segformer.parameters(), encoder_lr_scale)
+        encoder_parameter_ids = {id(parameter) for parameter in model.model.segformer.parameters()}
+        decoder_parameters = [
+            parameter
+            for parameter in model.model.parameters()
+            if parameter.requires_grad and id(parameter) not in encoder_parameter_ids
+        ]
+        decoder_group = make_group(decoder_parameters, decoder_lr_scale)
+        groups = [group for group in (encoder_group, decoder_group) if group is not None]
+    elif isinstance(model, DeepLabV3PlusSegmentationModel):
+        encoder_group = make_group(model.model.encoder.parameters(), encoder_lr_scale)
+        encoder_parameter_ids = {id(parameter) for parameter in model.model.encoder.parameters()}
+        decoder_parameters = [
+            parameter
+            for parameter in model.model.parameters()
+            if parameter.requires_grad and id(parameter) not in encoder_parameter_ids
+        ]
+        decoder_group = make_group(decoder_parameters, decoder_lr_scale)
+        groups = [group for group in (encoder_group, decoder_group) if group is not None]
+
+    if groups:
+        return groups
+
+    fallback_group = make_group(model.parameters(), 1.0)
+    return [fallback_group] if fallback_group is not None else []
+
+
 def model_descriptor(config: dict[str, Any]) -> str:
     model_type = resolve_model_type(config)
     if model_type == "dinov2":

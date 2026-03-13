@@ -33,7 +33,7 @@ function formatBytes(bytes) {
 }
 
 function firstSplitKey(dashboard) {
-  if (!dashboard) {
+  if (!dashboard || !dashboard.splits || Object.keys(dashboard.splits).length === 0) {
     return "val";
   }
 
@@ -144,7 +144,21 @@ function App() {
   }, [selectedSample]);
 
   const metrics = splitData?.metrics;
-  const bestValIoU = takeBest(dashboard?.history?.val_iou);
+  const peakTrainLoopIoU = takeBest(dashboard?.history?.val_iou);
+  const validationBenchmark = selectedRunSummary?.valMeanIoU ?? dashboard?.splits?.val?.metrics?.mean_iou;
+  const testBenchmark = selectedRunSummary?.testMeanIoU ?? dashboard?.splits?.test?.metrics?.mean_iou;
+  const comparisonSignal =
+    activeSplit === "val"
+      ? {
+          label: "Held-out test IoU",
+          value: percent(testBenchmark),
+          note: "Full 1002-image test evaluation",
+        }
+      : {
+          label: "Validation IoU",
+          value: percent(validationBenchmark),
+          note: "Full 317-image validation benchmark",
+        };
 
   const summarySignals = useMemo(
     () => [
@@ -163,13 +177,16 @@ function App() {
         value: String(selectedRunSummary?.epochs ?? dashboard?.history?.val_iou?.length ?? 0),
         note: "Saved training history",
       },
-      {
-        label: "Best checkpoint",
-        value: percent(bestValIoU),
-        note: "Peak validation IoU",
-      },
+      comparisonSignal,
     ],
-    [bestValIoU, dashboard?.history?.val_iou?.length, metrics?.mean_iou, metrics?.pixel_accuracy, selectedRunSummary?.epochs, splitData?.label]
+    [
+      comparisonSignal,
+      dashboard?.history?.val_iou?.length,
+      metrics?.mean_iou,
+      metrics?.pixel_accuracy,
+      selectedRunSummary?.epochs,
+      splitData?.label,
+    ]
   );
 
   if (isLoading && !dashboard) {
@@ -194,6 +211,22 @@ function App() {
       </main>
     );
   }
+
+  if (dashboard && !splitData) {
+    return (
+      <main className="page">
+        <section className="loading-shell">
+          <p className="eyebrow">TerrainScope</p>
+          <h1>No evaluation splits found for this run</h1>
+          <p className="panel-copy">
+            This run has training history, but the API could not find usable evaluation artifacts. Pick another run or rerun
+            `test.py` for validation/test outputs.
+          </p>
+        </section>
+      </main>
+    );
+  }
+
   return (
     <main className="page page-redesign">
       <section className="top-grid">
@@ -282,8 +315,8 @@ function App() {
                 <strong>{percent(selectedRunSummary?.testMeanIoU)}</strong>
               </div>
               <div>
-                <span>Peak val IoU</span>
-                <strong>{percent(selectedRunSummary?.bestValIoU)}</strong>
+                <span>Train-loop peak</span>
+                <strong>{percent(peakTrainLoopIoU)}</strong>
               </div>
             </div>
           </section>

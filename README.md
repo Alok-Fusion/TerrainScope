@@ -13,7 +13,7 @@ Autonomous off-road navigation requires a model that can separate traversable te
 
 ## Solution Overview
 
-TerrainScope uses a frozen **DINOv2 ViT-S/14** backbone as a feature extractor and trains a lightweight segmentation head on top of those features. The training and evaluation pipeline is config-driven, CPU-safe by default, and backed by a React + FastAPI demo layer for live inference and visual comparison.
+TerrainScope implements multiple state-of-the-art segmentation architectures for comprehensive off-road scene understanding. The system includes DINOv2 ViT-B/14, SegFormer B0, and DeepLabV3+ models, all trained on the Falcon dataset. The training and evaluation pipeline is config-driven, CPU-safe by default, and backed by a React + FastAPI demo layer for live inference and visual comparison.
 
 ### Key Capabilities
 
@@ -26,24 +26,24 @@ TerrainScope uses a frozen **DINOv2 ViT-S/14** backbone as a feature extractor a
 
 ## Final Results Snapshot
 
-The best published run in this repository is `quick_cpu_100x20`. That run was resumed once and trained for **40 total epochs** while preserving the same run folder and checkpoint lineage.
+Two DINOv2 runs now matter in this repository:
 
-| Split | Mean IoU | Mean Dice | Pixel Accuracy | Images |
-| --- | ---: | ---: | ---: | ---: |
-| Validation | **30.30%** | **38.88%** | **75.35%** | 317 |
-| Test | **21.08%** | **26.27%** | **63.15%** | 1002 |
+- `quick_cpu_100x20`: the strongest test-generalizing CPU baseline
+- `probe_continue_high_iou`: a warm-start continuation that improves validation IoU substantially, but currently overfits relative to the held-out test split
 
-### Training Summary From Final Run
+| Run | Purpose | Model | Validation IoU | Validation Dice | Validation Accuracy | Test IoU | Test Dice | Test Accuracy |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `quick_cpu_100x20` | Best balanced CPU baseline | DINOv2 ViT-S/14 + ConvNeXt-style head | 32.93% | 41.75% | 77.00% | **21.21%** | **26.34%** | **61.66%** |
+| `probe_continue_high_iou` | Best validation-focused continuation | DINOv2 ViT-S/14 + ConvNeXt-style head | **42.88%** | **55.42%** | **78.38%** | 19.80% | 25.84% | 40.71% |
 
-| Metric | Value |
-| --- | ---: |
-| Best validation IoU during training | 26.24% |
-| Final training IoU | 30.63% |
-| Final validation IoU during training loop | 26.24% |
-| Final training Dice | 39.13% |
-| Final validation Dice during training loop | 31.59% |
-| Final training pixel accuracy | 77.50% |
-| Final validation pixel accuracy during training loop | 68.61% |
+The continuation recipe raised full validation IoU by **9.95 percentage points** over the previous baseline, but it did **not** improve test-set generalization yet. If your priority is the highest validation IoU, use `probe_continue_high_iou`. If your priority is the stronger test result, keep `quick_cpu_100x20`.
+
+Additional model support is now implemented for:
+- `dinov2_vitb14`
+- `segformer_b0`
+- `deeplabv3plus`
+
+Those alternate backbones have working train/eval/inference paths and short CPU smoke runs, but they have not yet surpassed the DINOv2 continuation result above on validation or the `quick_cpu_100x20` baseline on test.
 
 ## Dataset
 
@@ -101,13 +101,12 @@ Unknown mask values are mapped to `255` and treated as invalid. This prevents si
 ```mermaid
 flowchart LR
     A[RGB Image] --> B[Resize + Normalize]
-    B --> C[Frozen DINOv2 ViT-S/14 Backbone]
-    C --> D[Feature Upsampling + Segmentation Head]
-    D --> E[10-Class Logits]
-    E --> F[Argmax Segmentation Mask]
-    F --> G[Metrics and Visualization]
-    F --> H[FastAPI Inference Service]
-    H --> I[React Dashboard]
+    B --> C[Segmentation Model]
+    C --> D[10-Class Logits]
+    D --> E[Argmax Segmentation Mask]
+    E --> F[Metrics and Visualization]
+    E --> G[FastAPI Inference Service]
+    G --> H[React Dashboard]
 ```
 
 ### Model Components
@@ -119,17 +118,18 @@ flowchart LR
 | Alternate DINOv2 backbone | `dinov2_vitb14` |
 | SegFormer variant | `nvidia/segformer-b0-finetuned-ade-512-512` |
 | DeepLabV3+ encoder | `mobilenet_v2` |
-| Encoder mode | Frozen during training by default |
-| Head | Lightweight segmentation head |
-| Input size for final run | `140 x 252` |
+| Encoder mode | Frozen by default, optional full fine-tuning |
+| Head | Lightweight custom head for DINOv2, native decoder for SegFormer / DeepLabV3+ |
+| Input size for validated baseline | `140 x 252` |
 | Default device | Auto-detect, CPU-safe by default |
-| Loss | Cross-entropy on class IDs |
-| Optimizer | SGD with momentum |
+| Losses | Cross-entropy or class-balanced CE + Dice |
+| Optimizers | SGD or AdamW |
 
 ### Why This Design
 
-- **DINOv2** provides strong semantic features even when compute is limited.
-- **Frozen backbone training** keeps the project reproducible on CPU-only setups.
+- **DINOv2** provides a strong baseline even under CPU-constrained training.
+- **Multiple model backends** make the project useful for both benchmarking and follow-up experimentation.
+- **High-IoU training options** now include class-balanced loss, balanced sampling, augmentation, gradient accumulation, and cosine scheduling.
 - **Shared dataset contract** eliminates label mismatches between training, evaluation, visualization, and live inference.
 - **Separate API + frontend** makes the project easier to demo for judges and easier to reproduce for reviewers.
 
@@ -161,7 +161,7 @@ flowchart LR
 
 ### Training Curves
 
-The final run shows steady improvement across loss, IoU, Dice, and pixel accuracy over the resumed 40-epoch training history.
+The validated baseline shows steady improvement across loss, IoU, Dice, and pixel accuracy over the resumed 80-epoch training history.
 
 ![Training curves](docs/screenshots/training_metrics.png)
 
@@ -203,7 +203,7 @@ python -m pip install -r .\Offroad_Segmentation_Scripts\requirements.txt
 python .\Offroad_Segmentation_Scripts\train.py --dry_run --max_train_batches 1 --max_val_batches 1 --run_name smoke_test
 ```
 
-### 3. Train a Full Run
+### 3. Train the validated baseline
 
 ```powershell
 python .\Offroad_Segmentation_Scripts\train.py --config .\Offroad_Segmentation_Scripts\configs\quick_cpu.json --epochs 20 --max_train_batches 100 --max_val_batches 20 --run_name quick_cpu_100x20
@@ -224,25 +224,64 @@ python .\Offroad_Segmentation_Scripts\train.py --config .\Offroad_Segmentation_S
 python .\Offroad_Segmentation_Scripts\train.py --config .\Offroad_Segmentation_Scripts\configs\quick_cpu_deeplabv3plus.json --max_train_batches 50 --max_val_batches 10 --run_name quick_deeplabv3plus
 ```
 
-### 4. Resume Training
+### 4. Resume the validated baseline to 80 epochs
 
 ```powershell
-python .\Offroad_Segmentation_Scripts\train.py --config .\Offroad_Segmentation_Scripts\configs\quick_cpu.json --resume_from .\Offroad_Segmentation_Scripts\runs\quick_cpu_100x20\checkpoints\last.pth --epochs 20 --max_train_batches 100 --max_val_batches 20
+python .\Offroad_Segmentation_Scripts\train.py --config .\Offroad_Segmentation_Scripts\configs\quick_cpu.json --resume_from .\Offroad_Segmentation_Scripts\runs\quick_cpu_100x20\checkpoints\last.pth --epochs 40 --max_train_batches 100 --max_val_batches 20
 ```
 
-### 5. Evaluate on Validation
+### 5. Run the faster high-IoU continuation
+
+This is the fastest validated improvement path we found on CPU. It warm-starts from the `quick_cpu_100x20` checkpoint, switches to class-balanced CE + Focal + Dice loss, uses stronger augmentation, and keeps training capped to stay practical.
+
+```powershell
+python .\Offroad_Segmentation_Scripts\train.py --config .\Offroad_Segmentation_Scripts\configs\high_iou_continue_from_quick.json --resume_from .\Offroad_Segmentation_Scripts\runs\quick_cpu_100x20\checkpoints\best_iou.pth --resume_weights_only --epochs 8 --max_train_batches 100 --max_val_batches 20 --run_name probe_continue_high_iou
+```
+
+Result from that exact continuation:
+- Validation Mean IoU: `42.88%`
+- Validation Mean Dice: `55.42%`
+- Validation Pixel Accuracy: `78.38%`
+
+### 6. Evaluate on Validation
 
 ```powershell
 python .\Offroad_Segmentation_Scripts\test.py --config .\Offroad_Segmentation_Scripts\configs\quick_cpu.json --model_path .\Offroad_Segmentation_Scripts\runs\quick_cpu_100x20\checkpoints\best_iou.pth --data_root .\Offroad_Segmentation_Training_Dataset\Offroad_Segmentation_Training_Dataset\val
 ```
 
-### 6. Evaluate on Test
+Validation for the continuation run:
+
+```powershell
+python .\Offroad_Segmentation_Scripts\test.py --config .\Offroad_Segmentation_Scripts\configs\high_iou_continue_from_quick.json --model_path .\Offroad_Segmentation_Scripts\runs\probe_continue_high_iou\checkpoints\best_iou.pth --data_root .\Offroad_Segmentation_Training_Dataset\Offroad_Segmentation_Training_Dataset\val --output_dir .\Offroad_Segmentation_Scripts\runs\probe_continue_high_iou\evaluations\val_full_epoch8
+```
+
+### 7. Evaluate on Test
 
 ```powershell
 python .\Offroad_Segmentation_Scripts\test.py --config .\Offroad_Segmentation_Scripts\configs\quick_cpu.json --model_path .\Offroad_Segmentation_Scripts\runs\quick_cpu_100x20\checkpoints\best_iou.pth --data_root .\Offroad_Segmentation_testImages\Offroad_Segmentation_testImages
 ```
 
-### 7. Colorize Raw or Predicted Masks
+Test for the continuation run:
+
+```powershell
+python .\Offroad_Segmentation_Scripts\test.py --config .\Offroad_Segmentation_Scripts\configs\high_iou_continue_from_quick.json --model_path .\Offroad_Segmentation_Scripts\runs\probe_continue_high_iou\checkpoints\best_iou.pth --data_root .\Offroad_Segmentation_testImages\Offroad_Segmentation_testImages --output_dir .\Offroad_Segmentation_Scripts\runs\probe_continue_high_iou\evaluations\test_full_epoch8
+```
+
+### 7A. Train the stronger IoU-oriented recipe
+
+This path is designed to push beyond the quick baseline. It enables class-balanced CE + Dice loss, balanced sampling, data augmentation, AdamW, cosine scheduling, and larger input resolution.
+
+```powershell
+python .\Offroad_Segmentation_Scripts\train.py --config .\Offroad_Segmentation_Scripts\configs\high_iou_segformer_b0.json
+```
+
+```powershell
+python .\Offroad_Segmentation_Scripts\train.py --config .\Offroad_Segmentation_Scripts\configs\high_iou_dinov2.json
+```
+
+For this recipe, do not cap training with `--max_train_batches` if your goal is to chase `0.50+` IoU. The capped continuation above is the practical CPU compromise; the uncapped version is materially slower.
+
+### 8. Colorize Raw or Predicted Masks
 
 ```powershell
 python .\Offroad_Segmentation_Scripts\visualize.py --input_path .\Offroad_Segmentation_testImages\Offroad_Segmentation_testImages\Segmentation --mode raw
@@ -318,6 +357,8 @@ This repository is not just a model checkpoint dump. The following engineering i
 - Corrected dataset root resolution for nested training and test folders
 - Added evaluation artifact export and failure-case generation
 - Added resume support for training continuation
+- Added class-balanced CE + Focal + Dice loss, balanced sampling, and augmentation support
+- Added AdamW / cosine scheduling and gradient accumulation for stronger long runs
 - Added a FastAPI inference server and React dashboard
 - Added report-ready plots, comparisons, and documentation assets
 
