@@ -206,7 +206,7 @@ function App() {
             </p>
             <div className="hero-pills">
               <span className="pill">Run: {dashboard.runName}</span>
-              <span className="pill">Backbone: {dashboard.config.backboneName}</span>
+              <span className="pill">Model: {dashboard.config.modelName || dashboard.config.backboneName}</span>
               <span className="pill">{splitData?.label} split</span>
             </div>
           </div>

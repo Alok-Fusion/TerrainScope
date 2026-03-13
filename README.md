@@ -114,8 +114,12 @@ flowchart LR
 
 | Component | Choice |
 | --- | --- |
-| Backbone | `dinov2_vits14` |
-| Backbone mode | Frozen during training |
+| Supported model types | `dinov2`, `segformer_b0`, `deeplabv3plus` |
+| Default backbone | `dinov2_vits14` |
+| Alternate DINOv2 backbone | `dinov2_vitb14` |
+| SegFormer variant | `nvidia/segformer-b0-finetuned-ade-512-512` |
+| DeepLabV3+ encoder | `mobilenet_v2` |
+| Encoder mode | Frozen during training by default |
 | Head | Lightweight segmentation head |
 | Input size for final run | `140 x 252` |
 | Default device | Auto-detect, CPU-safe by default |
@@ -203,6 +207,21 @@ python .\Offroad_Segmentation_Scripts\train.py --dry_run --max_train_batches 1 -
 
 ```powershell
 python .\Offroad_Segmentation_Scripts\train.py --config .\Offroad_Segmentation_Scripts\configs\quick_cpu.json --epochs 20 --max_train_batches 100 --max_val_batches 20 --run_name quick_cpu_100x20
+```
+
+### Fast model-switching commands
+
+These configs keep training short on CPU by using frozen encoders, batch size `1`, and small image sizes.
+
+```powershell
+# DINOv2 ViT-B/14
+python .\Offroad_Segmentation_Scripts\train.py --config .\Offroad_Segmentation_Scripts\configs\quick_cpu_dinov2_vitb14.json --max_train_batches 50 --max_val_batches 10 --run_name quick_dino_vitb14
+
+# SegFormer-B0
+python .\Offroad_Segmentation_Scripts\train.py --config .\Offroad_Segmentation_Scripts\configs\quick_cpu_segformer_b0.json --max_train_batches 50 --max_val_batches 10 --run_name quick_segformer_b0
+
+# DeepLabV3+ with MobileNetV2
+python .\Offroad_Segmentation_Scripts\train.py --config .\Offroad_Segmentation_Scripts\configs\quick_cpu_deeplabv3plus.json --max_train_batches 50 --max_val_batches 10 --run_name quick_deeplabv3plus
 ```
 
 ### 4. Resume Training

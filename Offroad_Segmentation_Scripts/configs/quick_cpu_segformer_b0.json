@@ -1,7 +1,7 @@
 {
-  "run_name": "quick_cpu",
-  "model_type": "dinov2",
-  "backbone_name": "dinov2_vits14",
+  "run_name": "quick_cpu_segformer_b0",
+  "model_type": "segformer_b0",
+  "segformer_model_name": "nvidia/segformer-b0-finetuned-ade-512-512",
   "freeze_encoder": true,
   "image_size": [140, 252],
   "epochs": 1,

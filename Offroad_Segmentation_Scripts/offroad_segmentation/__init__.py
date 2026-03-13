@@ -10,7 +10,25 @@ from .labels import (
     mask_to_color,
 )
 from .metrics import create_confusion_matrix, metrics_from_confusion_matrix, update_confusion_matrix
-from .model import SegmentationHeadConvNeXt, extract_patch_tokens, load_backbone
+from .model import (
+    DEEPLAB_DEFAULT_ENCODER_NAME,
+    DEFAULT_MODEL_TYPE,
+    SEGFORMER_DEFAULT_MODEL_NAME,
+    SUPPORTED_MODEL_TYPES,
+    DinoV2SegmentationModel,
+    SegFormerSegmentationModel,
+    SegmentationHeadConvNeXt,
+    DeepLabV3PlusSegmentationModel,
+    build_segmentation_model,
+    checkpoint_metadata_for_model,
+    extract_patch_tokens,
+    forward_model_logits,
+    get_trainable_parameters,
+    load_dino_backbone,
+    load_model_weights,
+    model_descriptor,
+    resolve_model_type,
+)
 from .reporting import (
     save_color_mask,
     save_comparison_figure,

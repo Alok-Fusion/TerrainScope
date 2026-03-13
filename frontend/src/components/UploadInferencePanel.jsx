@@ -84,7 +84,7 @@ function UploadInferencePanel({ runName, onOpenFullscreen }) {
       { label: "Dominant class", value: result.imageInfo.dominantClass || "Unknown" },
       { label: "Mean confidence", value: percent(result.imageInfo.meanConfidence) },
       { label: "Inference time", value: `${Math.round(result.imageInfo.inferenceMs)} ms` },
-      { label: "Backbone", value: result.modelInfo.backboneName },
+      { label: "Model", value: result.modelInfo.modelName || result.modelInfo.backboneName },
     ];
   }, [result]);
 

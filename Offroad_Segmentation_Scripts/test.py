@@ -16,7 +16,7 @@ from offroad_segmentation.config import config_to_jsonable, load_config
 from offroad_segmentation.data import FalconSegmentationDataset, validate_raw_values_subset
 from offroad_segmentation.labels import IGNORE_INDEX, NUM_CLASSES
 from offroad_segmentation.metrics import create_confusion_matrix, metrics_from_confusion_matrix, update_confusion_matrix
-from offroad_segmentation.model import SegmentationHeadConvNeXt, extract_patch_tokens, load_backbone
+from offroad_segmentation.model import build_segmentation_model, forward_model_logits, load_model_weights
 from offroad_segmentation.reporting import (
     save_color_mask,
     save_comparison_figure,
@@ -26,9 +26,20 @@ from offroad_segmentation.reporting import (
     save_per_class_plot,
 )
 
+MODEL_CONFIG_KEYS = (
+    "model_type",
+    "backbone_name",
+    "segformer_model_name",
+    "deeplab_encoder_name",
+    "deeplab_encoder_weights",
+    "freeze_encoder",
+    "patch_size",
+    "image_size",
+)
+
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Evaluate a trained DINOv2 segmentation head and save predictions.")
+    parser = argparse.ArgumentParser(description="Evaluate a trained segmentation model and save predictions.")
     parser.add_argument("--config", type=str, default=None, help="Path to a JSON config file.")
     parser.add_argument("--model_path", type=str, default=None, help="Path to a checkpoint created by train.py.")
     parser.add_argument("--data_root", type=str, default=None, help="Dataset split root to evaluate.")
@@ -70,11 +81,17 @@ def per_image_iou(prediction: torch.Tensor, target: torch.Tensor) -> float:
     return float(metrics_from_confusion_matrix(confusion_matrix)["mean_iou"])
 
 
-def resolve_head_state(checkpoint: dict | torch.Tensor) -> tuple[dict, int | None, tuple[int, int] | None]:
-    if isinstance(checkpoint, dict) and "head_state_dict" in checkpoint:
-        token_grid = tuple(checkpoint.get("token_grid", [])) if checkpoint.get("token_grid") else None
-        return checkpoint["head_state_dict"], checkpoint.get("embedding_dim"), token_grid
-    return checkpoint, None, None
+def apply_checkpoint_model_config(config: dict, checkpoint: dict | torch.Tensor) -> dict:
+    if not isinstance(checkpoint, dict) or "config" not in checkpoint:
+        return config
+
+    checkpoint_config = checkpoint["config"]
+    for key in MODEL_CONFIG_KEYS:
+        if key in checkpoint_config:
+            config[key] = checkpoint_config[key]
+    if "image_size" in config:
+        config["image_size"] = tuple(int(value) for value in config["image_size"])
+    return config
 
 
 def main() -> None:
@@ -98,6 +115,9 @@ def main() -> None:
     if not model_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {model_path}")
 
+    checkpoint = torch.load(model_path, map_location=device)
+    config = apply_checkpoint_model_config(config, checkpoint)
+
     data_root = Path(config["test_data_root"]).resolve()
     output_dir = Path(args.output_dir).resolve() if args.output_dir else infer_output_dir(model_path, config["scripts_dir"], data_root)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -116,27 +136,9 @@ def main() -> None:
         pin_memory=device.type == "cuda",
     )
 
-    checkpoint = torch.load(model_path, map_location=device)
-    state_dict, embedding_dim, token_grid = resolve_head_state(checkpoint)
-
-    image_height, image_width = config["image_size"]
-    patch_size = int(config["patch_size"])
-    token_grid = token_grid or (image_height // patch_size, image_width // patch_size)
-
-    backbone = load_backbone(str(config["backbone_name"]), device)
-    if embedding_dim is None:
-        sample_image, _, _ = dataset[0]
-        with torch.no_grad():
-            embedding_dim = int(extract_patch_tokens(backbone, sample_image.unsqueeze(0).to(device)).shape[-1])
-
-    head = SegmentationHeadConvNeXt(
-        in_channels=int(embedding_dim),
-        out_channels=NUM_CLASSES,
-        token_width=token_grid[1],
-        token_height=token_grid[0],
-    ).to(device)
-    head.load_state_dict(state_dict)
-    head.eval()
+    model = build_segmentation_model(config, num_classes=NUM_CLASSES, device=device)
+    load_model_weights(model, checkpoint)
+    model.eval()
 
     criterion = nn.CrossEntropyLoss(ignore_index=IGNORE_INDEX)
     confusion_matrix = create_confusion_matrix(NUM_CLASSES)
@@ -158,13 +160,13 @@ def main() -> None:
             images = images.to(device)
             masks = masks.to(device)
 
-            patch_tokens = extract_patch_tokens(backbone, images)
-            logits = head(patch_tokens)
-            outputs = F.interpolate(logits, size=masks.shape[-2:], mode="bilinear", align_corners=False)
-            loss = criterion(outputs, masks)
+            logits = forward_model_logits(model, images)
+            if logits.shape[-2:] != masks.shape[-2:]:
+                logits = F.interpolate(logits, size=masks.shape[-2:], mode="bilinear", align_corners=False)
+            loss = criterion(logits, masks)
             losses.append(float(loss.item()))
 
-            predictions = torch.argmax(outputs, dim=1)
+            predictions = torch.argmax(logits, dim=1)
             update_confusion_matrix(
                 confusion_matrix,
                 predictions=predictions.cpu(),

@@ -1,0 +1,13 @@
+{
+  "run_name": "quick_cpu_deeplabv3plus",
+  "model_type": "deeplabv3plus",
+  "deeplab_encoder_name": "mobilenet_v2",
+  "deeplab_encoder_weights": "imagenet",
+  "freeze_encoder": true,
+  "image_size": [144, 256],
+  "epochs": 1,
+  "batch_size": 1,
+  "validate_raw_values": false,
+  "num_visual_samples": 2,
+  "worst_case_count": 2
+}

@@ -1,7 +1,7 @@
 {
-  "run_name": "quick_cpu",
+  "run_name": "quick_cpu_dinov2_vitb14",
   "model_type": "dinov2",
-  "backbone_name": "dinov2_vits14",
+  "backbone_name": "dinov2_vitb14",
   "freeze_encoder": true,
   "image_size": [140, 252],
   "epochs": 1,

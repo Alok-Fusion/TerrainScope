@@ -19,9 +19,10 @@ from PIL import Image
 from Offroad_Segmentation_Scripts.offroad_segmentation.data import IMAGE_MEAN, IMAGE_STD
 from Offroad_Segmentation_Scripts.offroad_segmentation.labels import CLASS_NAMES, COLOR_PALETTE, NUM_CLASSES, mask_to_color
 from Offroad_Segmentation_Scripts.offroad_segmentation.model import (
-    SegmentationHeadConvNeXt,
-    extract_patch_tokens,
-    load_backbone,
+    build_segmentation_model,
+    forward_model_logits,
+    load_model_weights,
+    model_descriptor,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -73,13 +74,6 @@ def select_device(device_name: str) -> torch.device:
     return torch.device(device_name)
 
 
-def resolve_head_state(checkpoint: dict | torch.Tensor) -> tuple[dict[str, Any], int | None, tuple[int, int] | None]:
-    if isinstance(checkpoint, dict) and "head_state_dict" in checkpoint:
-        token_grid = tuple(checkpoint.get("token_grid", [])) if checkpoint.get("token_grid") else None
-        return checkpoint["head_state_dict"], checkpoint.get("embedding_dim"), token_grid
-    return checkpoint, None, None
-
-
 def run_dir_for_name(run_name: str) -> Path:
     run_dir = (RUNS_DIR / run_name).resolve()
     if not run_dir.exists() or not run_dir.is_dir():
@@ -113,6 +107,8 @@ def summarize_run(run_dir: Path) -> dict[str, Any]:
             "name": run_dir.name,
             "modifiedAt": run_dir.stat().st_mtime,
             "epochs": len(history.get("train_loss", [])),
+            "modelType": config.get("model_type", "dinov2"),
+            "modelName": model_descriptor(config),
             "backboneName": config.get("backbone_name"),
             "imageSize": config.get("image_size"),
             "bestValIoU": max(history.get("val_iou", [0.0]), default=0.0),
@@ -295,6 +291,8 @@ def build_dashboard_payload(run_name: str) -> dict[str, Any]:
         "classColors": [color_to_hex(color) for color in COLOR_PALETTE.tolist()],
         "config": {
             "device": config.get("device"),
+            "modelType": config.get("model_type", "dinov2"),
+            "modelName": model_descriptor(config),
             "backboneName": config.get("backbone_name"),
             "imageSize": config.get("image_size"),
             "batchSize": config.get("batch_size"),
@@ -492,40 +490,32 @@ def load_inference_bundle(run_name: str) -> dict[str, Any]:
     device = select_device(str(config.get("device", "auto")))
 
     checkpoint = torch.load(model_path, map_location=device)
-    state_dict, embedding_dim, token_grid = resolve_head_state(checkpoint)
+    if isinstance(checkpoint, dict) and "config" in checkpoint:
+        for key in (
+            "model_type",
+            "backbone_name",
+            "segformer_model_name",
+            "deeplab_encoder_name",
+            "deeplab_encoder_weights",
+            "freeze_encoder",
+            "patch_size",
+            "image_size",
+        ):
+            if key in checkpoint["config"]:
+                config[key] = checkpoint["config"][key]
+    if "image_size" in config:
+        config["image_size"] = tuple(int(value) for value in config["image_size"])
 
-    image_height, image_width = [int(value) for value in config["image_size"]]
-    patch_size = int(config["patch_size"])
-    token_grid = token_grid or (image_height // patch_size, image_width // patch_size)
-
-    backbone = load_backbone(str(config["backbone_name"]), device)
-    if embedding_dim is None:
-        sample_root = Path(config["val_data_root"] or config["train_data_root"])
-        sample_image_path = next(
-            image_path
-            for image_path in sorted((sample_root / "Color_Images").iterdir())
-            if image_path.is_file()
-        )
-        sample_tensor = preprocess_pil_image(Image.open(sample_image_path).convert("RGB"), (image_height, image_width))
-        with torch.no_grad():
-            embedding_dim = int(extract_patch_tokens(backbone, sample_tensor.unsqueeze(0).to(device)).shape[-1])
-
-    head = SegmentationHeadConvNeXt(
-        in_channels=int(embedding_dim),
-        out_channels=NUM_CLASSES,
-        token_width=token_grid[1],
-        token_height=token_grid[0],
-    ).to(device)
-    head.load_state_dict(state_dict)
-    head.eval()
+    model = build_segmentation_model(config, num_classes=NUM_CLASSES, device=device)
+    load_model_weights(model, checkpoint)
+    model.eval()
 
     return {
         "runName": run_name,
         "runDir": run_dir,
         "config": config,
         "device": device,
-        "backbone": backbone,
-        "head": head,
+        "model": model,
     }
 
 
@@ -562,8 +552,7 @@ def infer_uploaded_image(run_name: str, filename: str, file_bytes: bytes) -> dic
     bundle = load_inference_bundle(run_name)
     config = bundle["config"]
     device = bundle["device"]
-    backbone = bundle["backbone"]
-    head = bundle["head"]
+    model = bundle["model"]
 
     pil_image = Image.open(io.BytesIO(file_bytes)).convert("RGB")
     original_width, original_height = pil_image.size
@@ -572,8 +561,7 @@ def infer_uploaded_image(run_name: str, filename: str, file_bytes: bytes) -> dic
     image_tensor = preprocess_pil_image(pil_image, tuple(int(value) for value in config["image_size"])).unsqueeze(0).to(device)
 
     with torch.no_grad():
-        patch_tokens = extract_patch_tokens(backbone, image_tensor)
-        logits = head(patch_tokens)
+        logits = forward_model_logits(model, image_tensor)
         logits = F.interpolate(logits, size=(original_height, original_width), mode="bilinear", align_corners=False)
         probabilities = torch.softmax(logits, dim=1)
         prediction = torch.argmax(probabilities, dim=1)[0].cpu().numpy().astype(np.uint8)
@@ -592,6 +580,8 @@ def infer_uploaded_image(run_name: str, filename: str, file_bytes: bytes) -> dic
     result = {
         "runName": run_name,
         "modelInfo": {
+            "modelType": config.get("model_type", "dinov2"),
+            "modelName": model_descriptor(config),
             "backboneName": config.get("backbone_name"),
             "checkpoint": str((bundle["runDir"] / "checkpoints" / "best_iou.pth").resolve()),
             "imageSize": config.get("image_size"),

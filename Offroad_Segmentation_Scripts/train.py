@@ -18,12 +18,30 @@ from offroad_segmentation.config import config_to_jsonable, load_config
 from offroad_segmentation.data import FalconSegmentationDataset, validate_expected_raw_values
 from offroad_segmentation.labels import IGNORE_INDEX, NUM_CLASSES
 from offroad_segmentation.metrics import create_confusion_matrix, metrics_from_confusion_matrix, update_confusion_matrix
-from offroad_segmentation.model import SegmentationHeadConvNeXt, extract_patch_tokens, load_backbone
+from offroad_segmentation.model import (
+    build_segmentation_model,
+    checkpoint_metadata_for_model,
+    forward_model_logits,
+    get_trainable_parameters,
+    load_model_weights,
+    model_descriptor,
+)
 from offroad_segmentation.reporting import save_json, save_training_history, save_training_plots
+
+MODEL_CONFIG_KEYS = (
+    "model_type",
+    "backbone_name",
+    "segformer_model_name",
+    "deeplab_encoder_name",
+    "deeplab_encoder_weights",
+    "freeze_encoder",
+    "patch_size",
+    "image_size",
+)
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train the submission-ready DINOv2 segmentation head.")
+    parser = argparse.ArgumentParser(description="Train the off-road segmentation models with CPU-safe defaults.")
     parser.add_argument("--config", type=str, default=None, help="Path to a JSON config file.")
     parser.add_argument("--epochs", type=int, default=None, help="Override epoch count.")
     parser.add_argument("--batch_size", type=int, default=None, help="Override batch size.")
@@ -31,6 +49,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--val_root", type=str, default=None, help="Override validation dataset root.")
     parser.add_argument("--run_name", type=str, default=None, help="Name for the run directory.")
     parser.add_argument("--resume_from", type=str, default=None, help="Path to a last.pth/best_iou.pth checkpoint to continue from.")
+    parser.add_argument("--model_type", type=str, default=None, help="Model type: dinov2, segformer_b0, or deeplabv3plus.")
+    parser.add_argument("--backbone_name", type=str, default=None, help="Override DINOv2 backbone name, such as dinov2_vitb14.")
     parser.add_argument("--max_train_batches", type=int, default=None, help="Limit train batches per epoch.")
     parser.add_argument("--max_val_batches", type=int, default=None, help="Limit validation batches per epoch.")
     parser.add_argument("--dry_run", action="store_true", help="Run a single short epoch and still emit artifacts.")
@@ -82,24 +102,20 @@ def compute_average_loss(losses: list[float]) -> float:
 def save_checkpoint(
     path: Path,
     *,
-    head: torch.nn.Module,
+    model: torch.nn.Module,
     optimizer: optim.Optimizer,
     config: dict,
     epoch: int,
     metrics: dict[str, float],
-    embedding_dim: int,
-    token_grid: tuple[int, int],
     history: dict[str, list[float]],
     best_val_iou: float,
 ) -> None:
     payload = {
-        "head_state_dict": head.state_dict(),
+        **checkpoint_metadata_for_model(model),
         "optimizer_state_dict": optimizer.state_dict(),
         "config": config_to_jsonable(config),
         "epoch": epoch,
         "metrics": metrics,
-        "embedding_dim": embedding_dim,
-        "token_grid": list(token_grid),
         "history": history,
         "best_val_iou": best_val_iou,
     }
@@ -136,11 +152,22 @@ def infer_best_val_iou(history: dict[str, list[float]], checkpoint: dict | None)
     return -math.inf
 
 
+def apply_checkpoint_model_config(config: dict, checkpoint: dict | None) -> dict:
+    if not isinstance(checkpoint, dict) or "config" not in checkpoint:
+        return config
+    checkpoint_config = checkpoint["config"]
+    for key in MODEL_CONFIG_KEYS:
+        if key in checkpoint_config:
+            config[key] = checkpoint_config[key]
+    if "image_size" in config:
+        config["image_size"] = tuple(int(value) for value in config["image_size"])
+    return config
+
+
 def run_epoch(
     *,
     mode: str,
-    backbone: torch.nn.Module,
-    head: torch.nn.Module,
+    model: torch.nn.Module,
     loader: DataLoader,
     device: torch.device,
     criterion: nn.Module,
@@ -149,7 +176,7 @@ def run_epoch(
     max_batches: int | None,
 ) -> dict[str, float]:
     is_train = mode == "train"
-    head.train(is_train)
+    model.train(is_train)
 
     confusion_matrix = create_confusion_matrix(num_classes)
     losses: list[float] = []
@@ -162,19 +189,17 @@ def run_epoch(
         if optimizer is not None:
             optimizer.zero_grad(set_to_none=True)
 
-        with torch.no_grad():
-            patch_tokens = extract_patch_tokens(backbone, images)
-
         with torch.set_grad_enabled(is_train):
-            logits = head(patch_tokens)
-            outputs = F.interpolate(logits, size=masks.shape[-2:], mode="bilinear", align_corners=False)
-            loss = criterion(outputs, masks)
+            logits = forward_model_logits(model, images)
+            if logits.shape[-2:] != masks.shape[-2:]:
+                logits = F.interpolate(logits, size=masks.shape[-2:], mode="bilinear", align_corners=False)
+            loss = criterion(logits, masks)
 
             if is_train and optimizer is not None:
                 loss.backward()
                 optimizer.step()
 
-        predictions = torch.argmax(outputs, dim=1).detach().cpu()
+        predictions = torch.argmax(logits, dim=1).detach().cpu()
         update_confusion_matrix(
             confusion_matrix,
             predictions=predictions,
@@ -193,6 +218,11 @@ def run_epoch(
 def main() -> None:
     args = parse_args()
     resume_checkpoint_path = Path(args.resume_from).resolve() if args.resume_from else None
+    resume_checkpoint = None
+    if resume_checkpoint_path:
+        if not resume_checkpoint_path.exists():
+            raise FileNotFoundError(f"Resume checkpoint not found: {resume_checkpoint_path}")
+        resume_checkpoint = torch.load(resume_checkpoint_path, map_location="cpu")
     overrides = {
         key: value
         for key, value in {
@@ -201,11 +231,14 @@ def main() -> None:
             "train_data_root": str(Path(args.data_root).resolve()) if args.data_root else None,
             "val_data_root": str(Path(args.val_root).resolve()) if args.val_root else None,
             "run_name": args.run_name if args.run_name else None,
+            "model_type": args.model_type if args.model_type else None,
+            "backbone_name": args.backbone_name if args.backbone_name else None,
         }.items()
         if value is not None
     }
 
     config = load_config(args.config, overrides=overrides)
+    config = apply_checkpoint_model_config(config, resume_checkpoint)
     if args.dry_run:
         config["epochs"] = 1
 
@@ -214,15 +247,14 @@ def main() -> None:
     print(f"Using device: {device}")
     print(
         "Config summary: "
-        f"backbone={config['backbone_name']}, "
+        f"model_type={config['model_type']}, "
+        f"model={model_descriptor(config)}, "
         f"image_size={config['image_size'][0]}x{config['image_size'][1]}, "
         f"batch_size={config['batch_size']}, "
         f"epochs={config['epochs']}"
     )
 
     if resume_checkpoint_path:
-        if not resume_checkpoint_path.exists():
-            raise FileNotFoundError(f"Resume checkpoint not found: {resume_checkpoint_path}")
         run_dir = infer_run_dir_from_checkpoint(resume_checkpoint_path)
     else:
         run_dir = build_run_dir(config["scripts_dir"], str(config["run_name"]))
@@ -251,26 +283,15 @@ def main() -> None:
     print(f"Training samples: {len(train_dataset)}")
     print(f"Validation samples: {len(val_dataset)}")
 
-    backbone = load_backbone(str(config["backbone_name"]), device)
-    image_height, image_width = config["image_size"]
-    patch_size = int(config["patch_size"])
-    token_grid = (image_height // patch_size, image_width // patch_size)
-
-    sample_batch, _ = next(iter(train_loader))
-    with torch.no_grad():
-        sample_tokens = extract_patch_tokens(backbone, sample_batch.to(device))
-    embedding_dim = int(sample_tokens.shape[-1])
-
-    head = SegmentationHeadConvNeXt(
-        in_channels=embedding_dim,
-        out_channels=NUM_CLASSES,
-        token_width=token_grid[1],
-        token_height=token_grid[0],
-    ).to(device)
+    model = build_segmentation_model(config, num_classes=NUM_CLASSES, device=device)
 
     criterion = nn.CrossEntropyLoss(ignore_index=IGNORE_INDEX)
+    trainable_parameters = get_trainable_parameters(model)
+    if not trainable_parameters:
+        raise RuntimeError("No trainable parameters were found. Disable encoder freezing or check model initialization.")
+
     optimizer = optim.SGD(
-        head.parameters(),
+        trainable_parameters,
         lr=float(config["learning_rate"]),
         momentum=float(config["momentum"]),
         weight_decay=float(config["weight_decay"]),
@@ -279,11 +300,10 @@ def main() -> None:
     history = load_history(metrics_dir)
     best_val_iou = -math.inf
     start_epoch = 0
-    resume_checkpoint = None
 
     if resume_checkpoint_path:
         resume_checkpoint = torch.load(resume_checkpoint_path, map_location=device)
-        head.load_state_dict(resume_checkpoint["head_state_dict"])
+        load_model_weights(model, resume_checkpoint)
         if "optimizer_state_dict" in resume_checkpoint:
             optimizer.load_state_dict(resume_checkpoint["optimizer_state_dict"])
         start_epoch = int(resume_checkpoint.get("epoch", 0))
@@ -299,8 +319,7 @@ def main() -> None:
         print(f"\nEpoch {epoch + 1}/{end_epoch}")
         train_metrics = run_epoch(
             mode="train",
-            backbone=backbone,
-            head=head,
+            model=model,
             loader=train_loader,
             device=device,
             criterion=criterion,
@@ -310,8 +329,7 @@ def main() -> None:
         )
         val_metrics = run_epoch(
             mode="val",
-            backbone=backbone,
-            head=head,
+            model=model,
             loader=val_loader,
             device=device,
             criterion=criterion,
@@ -351,26 +369,22 @@ def main() -> None:
             best_val_iou = float(val_metrics["mean_iou"])
             save_checkpoint(
                 checkpoint_dir / "best_iou.pth",
-                head=head,
+                model=model,
                 optimizer=optimizer,
                 config=config,
                 epoch=epoch + 1,
                 metrics=current_metrics,
-                embedding_dim=embedding_dim,
-                token_grid=token_grid,
                 history=history,
                 best_val_iou=best_val_iou,
             )
 
         save_checkpoint(
             checkpoint_dir / "last.pth",
-            head=head,
+            model=model,
             optimizer=optimizer,
             config=config,
             epoch=epoch + 1,
             metrics=current_metrics,
-            embedding_dim=embedding_dim,
-            token_grid=token_grid,
             history=history,
             best_val_iou=best_val_iou,
         )
