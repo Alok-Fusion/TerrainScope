@@ -4,7 +4,7 @@
 **Team Name:** Team Invincible  
 **Team Members:** Karna Bhosle, Alok Kushwaha, Shankar Gouda  
 **Project Focus:** Off-road semantic segmentation for terrain understanding  
-**Tagline:** A reproducible DINOv2 baseline with evaluation exports, failure analysis, and live review
+**Tagline:** A reproducible multi-model segmentation kit with warm-start DINOv2 continuation, evaluation exports, failure analysis, and live review
 
 ---
 
@@ -20,15 +20,16 @@ This submission was designed to be:
 
 ### Final Headline Results
 
-Two DINOv2 runs define the current project state:
+Two DINOv2 runs define the current project state and the report now tracks both explicitly:
 
 | Run | Role | Validation IoU | Validation Dice | Validation Accuracy | Test IoU | Test Dice | Test Accuracy |
 |-------|-------------|---------:|----------:|--------------:|---------:|----------:|--------------:|
 | `quick_cpu_100x20` | Best balanced CPU baseline | 32.93% | 41.75% | 77.00% | **21.21%** | **26.34%** | **61.66%** |
-| `probe_continue_high_iou` | Best validation-focused continuation | **42.88%** | **55.42%** | **78.38%** | 19.80% | 25.84% | 40.71% |
+| `probe_continue_high_iou` | Latest validation-leading continuation run | **42.88%** | **55.42%** | **78.38%** | 19.80% | 25.84% | 40.71% |
 
 **Best Validation Model:** `probe_continue_high_iou` with 42.88% validation IoU  
-**Best Test-Generalizing Model:** `quick_cpu_100x20`
+**Best Test-Generalizing Model:** `quick_cpu_100x20` with 21.21% test IoU  
+**Current Frontend Default Run:** `probe_continue_high_iou`
 
 ---
 
@@ -144,6 +145,11 @@ Preprocessing
 | SegFormer B0 comparison | Transformer | nvidia/segformer-b0-finetuned-ade-512-512 | 140x252 | Yes | No |
 | DeepLabV3+ comparison | CNN | deeplabv3plus/mobilenet_v2 | 144x256 | Yes | No |
 
+Additional context:
+- `quick_cpu_100x20` is the long CPU baseline run with resumed training history and 80 tracked epochs in total
+- `probe_continue_high_iou` is a warm-start continuation initialized from the stronger DINOv2 baseline instead of training from scratch
+- the continuation was tuned to lift validation IoU aggressively, even if the test split needed separate monitoring
+
 ### 2.4 Training Setup
 
 | Item | Baseline | High-IoU Continuation |
@@ -175,11 +181,12 @@ The most important comparison is now between the original DINOv2 baseline and th
 | `quick_cpu_100x20` validation | 32.93% | 41.75% | 77.00% | Best baseline before continuation |
 | `probe_continue_high_iou` validation | **42.88%** | **55.42%** | **78.38%** | Best validation score in the repo |
 | `quick_cpu_100x20` test | **21.21%** | **26.34%** | **61.66%** | Best test-generalizing run |
-| `probe_continue_high_iou` test | 19.80% | 25.84% | 40.71% | Validation improvement did not transfer yet |
+| `probe_continue_high_iou` test | 19.80% | 25.84% | 40.71% | Validation improvement did not transfer fully to the held-out test split |
 
 **Key Findings:**
 - the warm-start continuation improved validation IoU by **9.95 percentage points**
-- the same continuation hurt held-out test performance, so it is not yet the best deployment candidate
+- the same continuation reduced held-out test performance by **1.41 percentage points** compared with the best balanced baseline
+- the latest report therefore keeps separate "best validation" and "best test" winners instead of forcing one headline model
 - DINOv2 remained stronger than the short-run SegFormer B0 and DeepLabV3+ comparisons in this codebase
 
 ### 3.2 Training-Time Validation vs Full Validation
@@ -190,16 +197,35 @@ The training loop used capped validation batches for faster feedback. The standa
 | --- | ---: | ---: | ---: | --- |
 | Baseline training-time summary | 27.06% | 32.24% | 70.15% | Faster, capped batches |
 | Baseline full validation evaluation | 32.93% | 41.75% | 77.00% | Original CPU baseline |
-| Continuation training-time summary | 34.76% | 43.48% | 73.29% | Best capped continuation checkpoint |
+| Continuation training-time summary | 35.97% | 45.60% | 73.36% | Best capped continuation checkpoint |
 | Continuation full validation evaluation | **42.88%** | **55.42%** | **78.38%** | Best current validation metric |
 
 ### 3.2 Per-Class Performance Analysis
 
-Detailed per-class performance metrics are available in the evaluation outputs for each trained model. The models show typical segmentation behavior:
+Detailed per-class metrics from the latest validation-leading run `probe_continue_high_iou` show a clear split between large scene classes and small obstacle classes:
 
-- **Best Performance:** Large, visually distinct classes (Sky, Landscape, Dry Grass)
-- **Challenging Classes:** Small obstacles and rare categories (Logs, Rocks, Ground Clutter, Dry Bushes)
-- **Architecture Comparison:** Transformer models (SegFormer, DINOv2) show better overall performance than CNN-based DeepLabV3+
+| Validation Class | IoU | Dice | Interpretation |
+| --- | ---: | ---: | --- |
+| Sky | **94.54%** | **97.20%** | Strongest class, visually distinct and spatially consistent |
+| Trees | 61.10% | 75.86% | Good performance on large structured vegetation |
+| Landscape | 56.09% | 71.87% | Stable horizon/terrain recognition |
+| Dry Grass | 56.00% | 71.80% | Strong coarse-ground segmentation |
+| Lush Bushes | 50.47% | 67.09% | Acceptable vegetation separation |
+| Flowers | 40.19% | 57.33% | Fine texture still learnable with continuation |
+| Dry Bushes | 30.97% | 47.29% | Boundary ambiguity remains visible |
+| Rocks | 22.18% | 36.30% | Small hard obstacles remain difficult |
+| Ground Clutter | 17.30% | 29.50% | Fragmented clutter is still weak |
+| Logs | 0.00% | 0.00% | Hardest rare class in the current setup |
+
+This pattern is consistent with the visual review:
+- broad scene classes are learned well
+- medium-scale vegetation is reasonable
+- rare obstacle classes still dominate the remaining error budget
+
+Architecture comparison still follows the same trend:
+- **Best Performance:** large, visually distinct classes such as Sky, Landscape, and Dry Grass
+- **Challenging Classes:** small obstacles and rare categories such as Logs, Rocks, Ground Clutter, and Dry Bushes
+- **Architecture Comparison:** transformer models (especially DINOv2) remain stronger than the short-run CNN baseline in this repo
 
 For detailed per-class IoU, Dice scores, and confusion matrices, see:
 - `Offroad_Segmentation_Scripts/runs/quick_cpu_100x20/evaluations/val/`
@@ -207,23 +233,40 @@ For detailed per-class IoU, Dice scores, and confusion matrices, see:
 
 ### 3.3 Required Charts and Visualizations
 
-Each trained model generates comprehensive evaluation artifacts including:
+Each trained model generates comprehensive evaluation artifacts including training curves, per-class breakdowns, confusion matrices, comparison images, and worst-case samples.
 
-#### Per-Class IoU Charts
-Available for each model:
-- SegFormer B0: `Offroad_Segmentation_Scripts/runs/segformer_b0_40ep/evaluations/val/per_class_iou.png`
-- DINOv2 ViT-B/14: `Offroad_Segmentation_Scripts/runs/dino_vitb14_40ep_20260313_050603/evaluations/val/per_class_iou.png`
-- DeepLabV3+: `Offroad_Segmentation_Scripts/runs/deeplabv3plus_40ep_20260313_051758/evaluations/val/per_class_iou.png`
+#### Primary Charts Used in This Report
+- Latest validation-leading run:
+  - `Offroad_Segmentation_Scripts/runs/probe_continue_high_iou/plots/training_metrics.png`
+  - `Offroad_Segmentation_Scripts/runs/probe_continue_high_iou/evaluations/val_full_epoch8/per_class_iou.png`
+  - `Offroad_Segmentation_Scripts/runs/probe_continue_high_iou/evaluations/val_full_epoch8/per_class_dice.png`
+  - `Offroad_Segmentation_Scripts/runs/probe_continue_high_iou/evaluations/val_full_epoch8/confusion_matrix.png`
+- Best balanced test-generalizing baseline:
+  - `Offroad_Segmentation_Scripts/runs/quick_cpu_100x20/plots/training_metrics.png`
+  - `Offroad_Segmentation_Scripts/runs/quick_cpu_100x20/evaluations/val/per_class_iou.png`
+  - `Offroad_Segmentation_Scripts/runs/quick_cpu_100x20/evaluations/val/confusion_matrix.png`
 
 #### Confusion Matrices
-Generated for all models showing prediction distributions across classes.
+Generated for all models and used here to show where vegetation, clutter, and obstacle classes collapse into each other.
 
 #### Prediction Visualizations
-Color-coded segmentation masks, side-by-side comparisons, and failure case analysis available in each model's evaluation folder.
+Color-coded segmentation masks, side-by-side comparisons, and failure case analysis are available in each model's evaluation folder and are embedded in the dashboard/API flow.
 
 ### 3.4 Test Set Evaluation
 
-Test set evaluation was performed on the original DINOv2 model. The current multi-model implementation provides validation results for all three architectures. Test evaluation can be run using:
+The latest official test evaluations in this project are:
+
+| Run | Mean IoU | Mean Dice | Pixel Accuracy | Decision |
+| --- | ---: | ---: | ---: | --- |
+| `quick_cpu_100x20` | **21.21%** | **26.34%** | **61.66%** | Best current deployment candidate |
+| `probe_continue_high_iou` | 19.80% | 25.84% | 40.71% | Best validation run, but weaker test generalization |
+
+Interpretation:
+- the continuation recipe lifted validation strongly
+- the test split exposed over-specialization toward the validation distribution
+- for a judged demo, both runs are useful: one for strongest charts, one for strongest held-out behavior
+
+Additional test evaluation for the alternate backbones can be run using:
 
 ```bash
 python Offroad_Segmentation_Scripts/test.py --config Offroad_Segmentation_Scripts/configs/quick_cpu_[model].json --model_path [checkpoint_path] --data_root Offroad_Segmentation_testImages/Offroad_Segmentation_testImages
@@ -233,11 +276,11 @@ Where `[model]` is one of: `dinov2_vitb14`, `segformer_b0`, or `deeplabv3plus`
 
 ### 3.5 Representative Prediction Examples
 
-Prediction visualizations, comparison images, and failure case analysis are available in each model's evaluation folder:
+Prediction visualizations, comparison images, and failure case analysis are available in the main evaluated runs:
 
-- **SegFormer B0:** `Offroad_Segmentation_Scripts/runs/segformer_b0_40ep/evaluations/val/comparisons/`
-- **DINOv2 ViT-B/14:** `Offroad_Segmentation_Scripts/runs/dino_vitb14_40ep_20260313_050603/evaluations/val/comparisons/`
-- **DeepLabV3+:** `Offroad_Segmentation_Scripts/runs/deeplabv3plus_40ep_20260313_051758/evaluations/val/comparisons/`
+- **Latest validation-leading run:** `Offroad_Segmentation_Scripts/runs/probe_continue_high_iou/evaluations/val_full_epoch8/comparisons/`
+- **Best balanced CPU baseline:** `Offroad_Segmentation_Scripts/runs/quick_cpu_100x20/evaluations/val/comparisons/`
+- **Held-out test review:** `Offroad_Segmentation_Scripts/runs/probe_continue_high_iou/evaluations/test_full_epoch8/comparisons/`
 
 These folders contain:
 - Color-coded segmentation predictions
@@ -255,7 +298,8 @@ The visualizations show that all models capture broad scene structure well but s
 | Raw Falcon masks | Labels could be corrupted by naive reading | Read masks unchanged and enforce a strict 10-class mapping | Stable labels and training |
 | Dataset path mismatch | Scripts did not match the real folder structure | Standardized the true nested train/val/test paths | Reproducible loading |
 | CPU training cost | Heavy models were too slow locally | Frozen DINOv2 + lightweight head + quick CPU config | Feasible local training |
-| Long runs were hard to finish | One short run was not enough | Added checkpoint resume support | Reached 40 recorded epochs |
+| Long runs were hard to finish | One short run was not enough | Added checkpoint resume support and warm-start continuation | Reached an 80-epoch baseline history plus a dedicated continuation experiment |
+| Validation vs test drift | A stronger validation recipe did not automatically generalize | Reported best-validation and best-test runs separately and kept both artifacts | More honest model selection |
 | Weak presentation quality | Static metrics alone were not enough | Added evaluation exports, API backend, and React frontend | Better demo and review flow |
 
 ### Example Entry
@@ -279,7 +323,7 @@ Beyond model training, the project was upgraded into a full submission kit:
 ### Failure Cases
 
 #### Failure Case 1
-![Failure Case 1](Offroad_Segmentation_Scripts/runs/quick_cpu_100x20/evaluations/val/worst_cases/worst_000_ww10000002.png)
+![Failure Case 1](Offroad_Segmentation_Scripts/runs/probe_continue_high_iou/evaluations/val_full_epoch8/worst_cases/worst_000_ww10000002.png)
 
 **What happened:**  
 The model struggled in a complex scene with mixed terrain and fine-grained regions.
@@ -291,7 +335,7 @@ Rare and small classes receive limited supervision in the current CPU-friendly s
 Use class-balanced loss, stronger augmentation, and a richer decoder.
 
 #### Failure Case 2
-![Failure Case 2](Offroad_Segmentation_Scripts/runs/quick_cpu_100x20/evaluations/val/worst_cases/worst_001_ww10000082.png)
+![Failure Case 2](Offroad_Segmentation_Scripts/runs/probe_continue_high_iou/evaluations/val_full_epoch8/worst_cases/worst_001_ww10000008.png)
 
 **What happened:**  
 Class boundaries were unstable in cluttered terrain.
@@ -308,7 +352,7 @@ Use higher-resolution training on GPU and partial backbone fine-tuning.
 
 ### 5.1 Deployment and Demonstration Layer
 
-The project includes a usable demo layer in addition to offline evaluation.
+The project includes a usable demo layer in addition to offline evaluation, and the frontend now opens on the latest validation-leading run by default.
 
 Backend:
 - FastAPI server for run discovery, asset serving, and upload inference
@@ -353,6 +397,7 @@ Final headline metrics:
 - Best Test Mean IoU: **21.21%**
 - Best Test Mean Dice: **26.34%**
 - Best Test Pixel Accuracy: **61.66%**
+- Current Frontend Default Run: **`probe_continue_high_iou`**
 
 ### Future Work
 
@@ -368,22 +413,26 @@ Final headline metrics:
 
 ### 6.1 Key Output Artifacts
 
-Important generated files for the final run:
-- `Offroad_Segmentation_Scripts/runs/quick_cpu_100x20/checkpoints/best_iou.pth`
-- `Offroad_Segmentation_Scripts/runs/quick_cpu_100x20/plots/training_metrics.png`
-- `Offroad_Segmentation_Scripts/runs/quick_cpu_100x20/evaluations/val/evaluation_metrics.txt`
-- `Offroad_Segmentation_Scripts/runs/quick_cpu_100x20/evaluations/val/per_class_iou.png`
-- `Offroad_Segmentation_Scripts/runs/quick_cpu_100x20/evaluations/val/confusion_matrix.png`
-- `Offroad_Segmentation_Scripts/runs/quick_cpu_100x20/evaluations/val/comparisons/`
-- `Offroad_Segmentation_Scripts/runs/quick_cpu_100x20/evaluations/val/worst_cases/`
+Important generated files for the latest report state:
+- `Offroad_Segmentation_Scripts/runs/probe_continue_high_iou/checkpoints/best_iou.pth`
+- `Offroad_Segmentation_Scripts/runs/probe_continue_high_iou/plots/training_metrics.png`
+- `Offroad_Segmentation_Scripts/runs/probe_continue_high_iou/evaluations/val_full_epoch8/evaluation_metrics.txt`
+- `Offroad_Segmentation_Scripts/runs/probe_continue_high_iou/evaluations/val_full_epoch8/per_class_iou.png`
+- `Offroad_Segmentation_Scripts/runs/probe_continue_high_iou/evaluations/val_full_epoch8/per_class_dice.png`
+- `Offroad_Segmentation_Scripts/runs/probe_continue_high_iou/evaluations/val_full_epoch8/confusion_matrix.png`
+- `Offroad_Segmentation_Scripts/runs/probe_continue_high_iou/evaluations/val_full_epoch8/comparisons/`
+- `Offroad_Segmentation_Scripts/runs/probe_continue_high_iou/evaluations/val_full_epoch8/worst_cases/`
+- `Offroad_Segmentation_Scripts/runs/quick_cpu_100x20/evaluations/Offroad_Segmentation_testImages/evaluation_metrics.txt`
 
 ### Reproduction Commands
 
 ```powershell
 python -m pip install -r .\Offroad_Segmentation_Scripts\requirements.txt
-python .\Offroad_Segmentation_Scripts\train.py --run_name dinov2_baseline
-python .\Offroad_Segmentation_Scripts\test.py --model_path .\Offroad_Segmentation_Scripts\runs\dinov2_baseline\checkpoints\best_iou.pth --data_root .\Offroad_Segmentation_Training_Dataset\Offroad_Segmentation_Training_Dataset\val
-python .\Offroad_Segmentation_Scripts\test.py --model_path .\Offroad_Segmentation_Scripts\runs\dinov2_baseline\checkpoints\best_iou.pth --data_root .\Offroad_Segmentation_testImages\Offroad_Segmentation_testImages
+python .\Offroad_Segmentation_Scripts\train.py --config .\Offroad_Segmentation_Scripts\configs\quick_cpu.json --epochs 40 --max_train_batches 100 --max_val_batches 20 --run_name quick_cpu_100x20
+python .\Offroad_Segmentation_Scripts\train.py --config .\Offroad_Segmentation_Scripts\configs\quick_cpu.json --resume_from .\Offroad_Segmentation_Scripts\runs\quick_cpu_100x20\checkpoints\last.pth --epochs 40 --max_train_batches 100 --max_val_batches 20
+python .\Offroad_Segmentation_Scripts\train.py --config .\Offroad_Segmentation_Scripts\configs\high_iou_continue_from_quick.json --resume_weights_only .\Offroad_Segmentation_Scripts\runs\quick_cpu_100x20\checkpoints\best_iou.pth --run_name probe_continue_high_iou
+python .\Offroad_Segmentation_Scripts\test.py --config .\Offroad_Segmentation_Scripts\configs\high_iou_continue_from_quick.json --model_path .\Offroad_Segmentation_Scripts\runs\probe_continue_high_iou\checkpoints\best_iou.pth --data_root .\Offroad_Segmentation_Training_Dataset\Offroad_Segmentation_Training_Dataset\val
+python .\Offroad_Segmentation_Scripts\test.py --config .\Offroad_Segmentation_Scripts\configs\high_iou_continue_from_quick.json --model_path .\Offroad_Segmentation_Scripts\runs\probe_continue_high_iou\checkpoints\best_iou.pth --data_root .\Offroad_Segmentation_testImages\Offroad_Segmentation_testImages
 ```
 
 ### Submission Checklist
